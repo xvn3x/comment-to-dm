@@ -80,7 +80,7 @@ export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => new URLSearchParams(window.location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
   const [showRule, setShowRule] = useState(false);
@@ -102,7 +102,6 @@ export function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const oauthError = params.get("error");
-    if (oauthError) setError(oauthError);
     if (oauthError || params.has("connected")) {
       window.history.replaceState({}, "", window.location.pathname);
     }

@@ -12,6 +12,7 @@ import type { AppConfig } from "./config.js";
 import type { Db } from "./db.js";
 import { enqueueComment, extractComments } from "./automation.js";
 import { MetaClient } from "./meta.js";
+import { privacyPolicyHtml } from "./privacy.js";
 import {
   SecretBox,
   createSession,
@@ -91,6 +92,12 @@ export async function buildApp(sql: Db, config: AppConfig) {
   };
 
   app.get("/health", async () => ({ ok: true }));
+  const sendPrivacyPolicy = async (_request: FastifyRequest, reply: FastifyReply) => reply
+    .header("Cache-Control", "public, max-age=3600")
+    .type("text/html; charset=utf-8")
+    .send(privacyPolicyHtml());
+  app.get("/privacy", sendPrivacyPolicy);
+  app.get("/privacy/", sendPrivacyPolicy);
   app.get("/api/session", async (request) => ({
     authenticated: verifySession(request.cookies[cookieName], config.SESSION_SECRET),
     metaMode: config.META_MODE,

@@ -69,8 +69,9 @@ META_GRAPH_VERSION=v25.0
 4. Добавьте OAuth callback в настройки Business Login for Instagram.
 5. Добавьте webhook URL в Meta Dashboard, укажите значение `META_WEBHOOK_VERIFY_TOKEN` из `.env` и подпишитесь на поле `comments`.
 6. Укажите Data Deletion и Deauthorize callback URL, показанные в админке.
-7. Вставьте App ID и App Secret в админке и нажмите «Сохранить и подключить».
-8. Авторизуйте профессиональный Instagram-аккаунт на официальной странице Instagram.
+7. В основных настройках Meta укажите публичную политику конфиденциальности: `https://your-service.up.railway.app/privacy`.
+8. Вставьте App ID и App Secret в админке и нажмите «Сохранить и подключить».
+9. Авторизуйте профессиональный Instagram-аккаунт на официальной странице Instagram.
 
 Не вводите пароль Instagram в Comment to DM, `.env`, терминал или чужую форму. Пароль должен вводиться только на странице Meta/Instagram.
 
