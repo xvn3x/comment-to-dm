@@ -205,8 +205,12 @@ export async function buildApp(sql: Db, config: AppConfig) {
         graphVersion: connection.graph_version,
       };
       const token = await meta.exchangeCode(credentials, parsed.data.code, `${config.PUBLIC_BASE_URL}/api/meta/oauth/callback`);
-      const context = { igUserId: token.userId, token: token.accessToken, graphVersion: credentials.graphVersion };
-      const profile = await meta.profile(context);
+      const oauthContext = { igUserId: token.userId, token: token.accessToken, graphVersion: credentials.graphVersion };
+      const profile = await meta.profile(oauthContext);
+      // The OAuth exchange returns an app-scoped user ID. Instagram's
+      // subscribed_apps edge expects the professional account ID returned by
+      // /me as user_id, so use the resolved profile ID from this point on.
+      const context = { ...oauthContext, igUserId: profile.id };
       await meta.subscribeToComments(context);
       await sql`
         UPDATE meta_connection SET ig_user_id = ${profile.id}, username = ${profile.username ?? null},

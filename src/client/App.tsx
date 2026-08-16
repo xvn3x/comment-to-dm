@@ -100,6 +100,13 @@ export function App() {
   }
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthError = params.get("error");
+    if (oauthError) setError(oauthError);
+    if (oauthError || params.has("connected")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
     api<{ authenticated: boolean }>("/api/session")
       .then(async (session) => {
         setAuthenticated(session.authenticated);
