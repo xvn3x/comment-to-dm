@@ -25,6 +25,11 @@ type Dashboard = {
     username: string | null;
     token_expires_at: string | null;
     connected_at: string | null;
+    outbound_paused: boolean;
+    rate_limited_until: string | null;
+    rate_limit_reason: string | null;
+    last_meta_usage_percent: number | null;
+    last_meta_response_at: string | null;
   };
   rules: Rule[];
   events: Array<{
@@ -36,6 +41,16 @@ type Dashboard = {
     created_at: string;
   }>;
   stats: { total_24h: number; sent_24h: number; failed_24h: number };
+  queue: {
+    pending: number;
+    private_pending: number;
+    public_pending: number;
+    retrying: number;
+    failed: number;
+    expired: number;
+    oldest_seconds: number;
+    throughput_per_minute: number;
+  };
   urls: { oauthCallback: string; webhook: string; deauthorize: string; dataDeletion: string };
   metaMode: "mock" | "live";
 };
@@ -74,6 +89,12 @@ const emptyRule: RuleForm = {
 
 function statusLabel(status: string) {
   return ({ sent: "Отправлено", queued: "В очереди", processing: "Отправляется", failed: "Ошибка", skipped_duplicate: "Повтор" } as Record<string, string>)[status] ?? status;
+}
+
+function duration(seconds: number) {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} сек.`;
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)} мин.`;
+  return `${Math.floor(seconds / 3600)} ч ${Math.ceil((seconds % 3600) / 60)} мин.`;
 }
 
 export function App() {
@@ -166,13 +187,23 @@ export function App() {
     await refresh();
   }
 
+  async function queueAction(action: "pause" | "resume" | "retry-failed") {
+    setBusy(true); setError("");
+    try {
+      await api(`/api/queue/${action}`, { method: "POST" });
+      await refresh();
+    } catch {
+      setError("Не удалось изменить состояние очереди.");
+    } finally { setBusy(false); }
+  }
+
   async function saveRule(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     const payload = {
       ...rule,
       mediaId: rule.targetScope === "specific" ? rule.mediaId : null,
       keywords: rule.matchMode === "any" ? [] : rule.keywords.split(",").map((word) => word.trim()).filter(Boolean),
-      publicReplies: rule.publicReplyEnabled ? rule.publicReplies.split("\n").map((text) => text.trim()).filter(Boolean).slice(0, 3) : [],
+      publicReplies: rule.publicReplyEnabled ? rule.publicReplies.split("\n").map((text) => text.trim()).filter(Boolean).slice(0, 10) : [],
       buttonText: rule.buttonText || null,
       buttonUrl: rule.buttonUrl || null,
     };
@@ -261,6 +292,40 @@ export function App() {
           <button className="secondary" onClick={() => connected ? setShowConnection(true) : setShowConnection(!showConnection)}>{connected ? "Настройки" : "Подключить"}</button>
         </section>
 
+        <section className="panel queue-panel">
+          <div className="panel-title">
+            <div><h2>Очередь доставки</h2><p>Direct отправляется первым. При ограничениях Meta очередь остановится автоматически и ничего не потеряет.</p></div>
+            <span className={`queue-state ${dashboard?.connection.outbound_paused ? "paused" : dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() ? "limited" : "ready"}`}>
+              {dashboard?.connection.outbound_paused
+                ? "Пауза"
+                : dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date()
+                  ? "Пауза Meta"
+                  : (dashboard?.queue.pending ?? 0) > 0 ? "Отправляется" : "Готова"}
+            </span>
+          </div>
+          <div className="queue-grid">
+            <div><span>Всего в очереди</span><strong>{dashboard?.queue.pending ?? 0}</strong></div>
+            <div><span>Direct</span><strong>{dashboard?.queue.private_pending ?? 0}</strong></div>
+            <div><span>Публичные ответы</span><strong>{dashboard?.queue.public_pending ?? 0}</strong></div>
+            <div><span>Скорость API</span><strong>{(dashboard?.queue.throughput_per_minute ?? 0).toFixed(1)} / мин</strong></div>
+          </div>
+          {(dashboard?.queue.pending ?? 0) > 0 && <div className="queue-details">
+            <span>Самое старое задание: {duration(dashboard?.queue.oldest_seconds ?? 0)}</span>
+            <span>Оценка завершения: {(dashboard?.queue.throughput_per_minute ?? 0) > 0 ? duration(((dashboard?.queue.pending ?? 0) / dashboard!.queue.throughput_per_minute) * 60) : "собираем данные"}</span>
+            {(dashboard?.queue.retrying ?? 0) > 0 && <span>Ожидают повтора: {dashboard?.queue.retrying}</span>}
+          </div>}
+          {dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() && <div className="queue-warning">
+            Meta временно ограничила скорость. Продолжим после {new Date(dashboard.connection.rate_limited_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.
+          </div>}
+          <div className="queue-actions">
+            <button className="secondary" disabled={busy} onClick={() => void queueAction(dashboard?.connection.outbound_paused ? "resume" : "pause")}>
+              {dashboard?.connection.outbound_paused ? "Продолжить отправку" : "Поставить на паузу"}
+            </button>
+            {(dashboard?.queue.failed ?? 0) > 0 && <button className="ghost" disabled={busy} onClick={() => void queueAction("retry-failed")}>Повторить ошибки ({dashboard?.queue.failed})</button>}
+            {dashboard?.connection.last_meta_usage_percent != null && <span className="meta-usage">Нагрузка Meta: {dashboard.connection.last_meta_usage_percent}%</span>}
+          </div>
+        </section>
+
         {showConnection && <section className="panel form-panel">
           <div className="panel-title"><div><h2>Подключение Meta</h2><p>Ключи сохраняются зашифрованными только на этом сервере.</p></div><button className="icon-button" onClick={() => setShowConnection(false)}>×</button></div>
           <form onSubmit={saveMeta} className="grid-form">
@@ -301,7 +366,7 @@ export function App() {
           {rule.targetScope === "specific" && <label>Post или Reel<select value={rule.mediaId} onChange={(event) => setRule({ ...rule, mediaId: event.target.value })}><option value="">Выберите публикацию</option>{media.map((item) => <option value={item.id} key={item.id}>{`${item.mediaType === "VIDEO" ? "Reel" : "Post"} · ${(item.caption || "Без подписи").slice(0, 70)}`}</option>)}</select>{!connected && <span>Сначала подключите Instagram.</span>}</label>}
           {rule.matchMode !== "any" && <label>Ключевые слова <span>через запятую</span><input value={rule.keywords} onChange={(event) => setRule({ ...rule, keywords: event.target.value })} /></label>}
           <label className="check"><input type="checkbox" checked={rule.publicReplyEnabled} onChange={(event) => setRule({ ...rule, publicReplyEnabled: event.target.checked })} />Публично ответить под комментарием</label>
-          {rule.publicReplyEnabled && <label>Варианты публичного ответа <span>каждый с новой строки, максимум 3</span><textarea rows={3} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}
+          {rule.publicReplyEnabled && <label>Варианты публичного ответа <span>каждый с новой строки, максимум 10</span><textarea rows={5} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}
           <label>Сообщение в Direct<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>
           <div className="two-cols"><label>Текст кнопки<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>HTTPS-ссылка<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div>
           <label className="check"><input type="checkbox" checked={rule.active} onChange={(event) => setRule({ ...rule, active: event.target.checked })} />Правило активно</label>

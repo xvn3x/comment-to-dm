@@ -6,9 +6,49 @@ export class MetaApiError extends Error {
     readonly status: number,
     readonly code?: number,
     readonly transient = false,
+    readonly retryAfterSeconds?: number,
+    readonly usagePercent?: number,
+    readonly estimatedRecoverySeconds?: number,
   ) {
     super(message);
   }
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function usagePercentFromHeaders(headers: Headers): number | undefined {
+  const values: number[] = [];
+  for (const name of ["x-app-usage", "x-business-use-case-usage"]) {
+    const raw = headers.get(name);
+    if (!raw) continue;
+    try {
+      const visit = (value: unknown, key?: string) => {
+        if (typeof value === "number" && ["call_count", "total_cputime", "total_time"].includes(key ?? "")) {
+          values.push(value);
+        } else if (Array.isArray(value)) {
+          value.forEach((entry) => visit(entry));
+        } else if (value && typeof value === "object") {
+          Object.entries(value).forEach(([childKey, child]) => visit(child, childKey));
+        }
+      };
+      visit(JSON.parse(raw));
+    } catch {
+      // Unknown usage headers must never break a successful API request.
+    }
+  }
+  return values.length ? Math.max(...values) : undefined;
+}
+
+function retryAfterSeconds(headers: Headers): number | undefined {
+  const raw = headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = positiveNumber(raw);
+  if (seconds) return Math.ceil(seconds);
+  const date = Date.parse(raw);
+  return Number.isFinite(date) ? Math.max(1, Math.ceil((date - Date.now()) / 1000)) : undefined;
 }
 
 type MetaCredentials = {
@@ -25,16 +65,26 @@ type SendContext = {
 
 async function parseMetaResponse(response: Response): Promise<Record<string, unknown>> {
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  const usagePercent = usagePercentFromHeaders(response.headers);
   if (!response.ok) {
     const detail = (body.error ?? {}) as Record<string, unknown>;
+    const errorData = (detail.error_data ?? {}) as Record<string, unknown>;
     throw new MetaApiError(
       String(detail.message ?? `Meta API returned HTTP ${response.status}`),
       response.status,
       typeof detail.code === "number" ? detail.code : undefined,
       Boolean(detail.is_transient),
+      retryAfterSeconds(response.headers),
+      usagePercent,
+      positiveNumber(errorData.estimated_time_to_regain_access),
     );
   }
+  if (usagePercent !== undefined) body.__usagePercent = usagePercent;
   return body;
+}
+
+function sentResult(body: Record<string, unknown>, idField: "id" | "message_id") {
+  return { externalId: String(body[idField] ?? ""), usagePercent: positiveNumber(body.__usagePercent) };
 }
 
 export class MetaClient {
@@ -153,15 +203,15 @@ export class MetaClient {
     };
   }
 
-  async publicReply(context: SendContext, commentId: string, message: string): Promise<string> {
-    if (this.config.META_MODE === "mock") return `mock-public-${Date.now()}`;
+  async publicReply(context: SendContext, commentId: string, message: string) {
+    if (this.config.META_MODE === "mock") return { externalId: `mock-public-${Date.now()}`, usagePercent: undefined };
     const url = `https://graph.instagram.com/${context.graphVersion}/${commentId}/replies`;
     const body = await parseMetaResponse(await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
     }));
-    return String(body.id ?? "");
+    return sentResult(body, "id");
   }
 
   async privateReply(
@@ -169,8 +219,8 @@ export class MetaClient {
     commentId: string,
     message: string,
     button?: { title: string; url: string },
-  ): Promise<string> {
-    if (this.config.META_MODE === "mock") return `mock-private-${Date.now()}`;
+  ) {
+    if (this.config.META_MODE === "mock") return { externalId: `mock-private-${Date.now()}`, usagePercent: undefined };
     const body = button
       ? {
           recipient: { comment_id: commentId },
@@ -192,6 +242,6 @@ export class MetaClient {
       headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }));
-    return String(result.message_id ?? "");
+    return sentResult(result, "message_id");
   }
 }

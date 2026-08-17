@@ -36,7 +36,7 @@ const ruleSchema = z.object({
   matchMode: z.enum(["any", "contains", "exact"]),
   keywords: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   publicReplyEnabled: z.boolean().default(true),
-  publicReplies: z.array(z.string().trim().min(1).max(300)).max(3).default([]),
+  publicReplies: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
   dmText: z.string().trim().min(1).max(640),
   buttonText: z.string().trim().min(1).max(20).nullable().optional(),
   buttonUrl: z.string().url().refine((url) => url.startsWith("https://"), "Only HTTPS links are allowed").nullable().optional(),
@@ -125,7 +125,9 @@ export async function buildApp(sql: Db, config: AppConfig) {
 
   app.get("/api/dashboard", { preHandler: requireAuth }, async () => {
     const connectionRows = await sql`
-      SELECT app_id, graph_version, ig_user_id, username, token_expires_at, connected_at
+      SELECT app_id, graph_version, ig_user_id, username, token_expires_at, connected_at,
+             outbound_paused, rate_limited_until, rate_limit_reason,
+             last_meta_usage_percent, last_meta_response_at
       FROM meta_connection WHERE singleton = TRUE
     `;
     const rules = await sql`SELECT * FROM rules ORDER BY priority ASC, created_at DESC`;
@@ -142,11 +144,24 @@ export async function buildApp(sql: Db, config: AppConfig) {
         COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '24 hours')::int AS failed_24h
       FROM events
     `;
+    const queue = await sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait'))::int AS pending,
+        COUNT(*) FILTER (WHERE kind = 'private_reply' AND status IN ('queued', 'processing', 'retry_wait'))::int AS private_pending,
+        COUNT(*) FILTER (WHERE kind = 'public_reply' AND status IN ('queued', 'processing', 'retry_wait'))::int AS public_pending,
+        COUNT(*) FILTER (WHERE status = 'retry_wait')::int AS retrying,
+        COUNT(*) FILTER (WHERE status IN ('failed', 'dead_letter'))::int AS failed,
+        COUNT(*) FILTER (WHERE status = 'expired')::int AS expired,
+        COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait'))))::int, 0) AS oldest_seconds,
+        (COUNT(*) FILTER (WHERE status = 'sent' AND updated_at >= NOW() - INTERVAL '5 minutes')::float / 5)::float AS throughput_per_minute
+      FROM jobs
+    `;
     return {
       connection: connectionRows[0],
       rules,
       events,
       stats: stats[0],
+      queue: queue[0],
       urls: {
         oauthCallback: `${config.PUBLIC_BASE_URL}/api/meta/oauth/callback`,
         webhook: `${config.PUBLIC_BASE_URL}/webhooks/instagram`,
@@ -155,6 +170,32 @@ export async function buildApp(sql: Db, config: AppConfig) {
       },
       metaMode: config.META_MODE,
     };
+  });
+
+  app.post("/api/queue/pause", { preHandler: requireAuth }, async () => {
+    await sql`UPDATE meta_connection SET outbound_paused = TRUE, updated_at = NOW() WHERE singleton = TRUE`;
+    return { ok: true };
+  });
+
+  app.post("/api/queue/resume", { preHandler: requireAuth }, async () => {
+    await sql`UPDATE meta_connection SET outbound_paused = FALSE, updated_at = NOW() WHERE singleton = TRUE`;
+    return { ok: true };
+  });
+
+  app.post("/api/queue/retry-failed", { preHandler: requireAuth }, async () => {
+    const rows = await sql<{ count: number }[]>`
+      WITH retried AS (
+        UPDATE jobs SET status = 'retry_wait', attempts = 0, next_attempt_at = NOW(), last_error = NULL, updated_at = NOW()
+        WHERE status IN ('failed', 'dead_letter')
+          AND (kind <> 'private_reply' OR created_at >= NOW() - INTERVAL '7 days')
+        RETURNING event_id
+      ), updated_events AS (
+        UPDATE events SET status = 'queued', error_message = NULL, processed_at = NULL
+        WHERE id IN (SELECT event_id FROM retried)
+      )
+      SELECT COUNT(*)::int AS count FROM retried
+    `;
+    return { ok: true, count: rows[0]?.count ?? 0 };
   });
 
   app.post("/api/meta/config", { preHandler: requireAuth }, async (request, reply) => {
@@ -339,7 +380,9 @@ export async function buildApp(sql: Db, config: AppConfig) {
       if (!valid) return reply.code(401).send({ error: "invalid_signature" });
     }
     const comments = extractComments(request.body);
-    await Promise.all(comments.map((comment) => enqueueComment(sql, comment)));
+    for (let index = 0; index < comments.length; index += 20) {
+      await Promise.all(comments.slice(index, index + 20).map((comment) => enqueueComment(sql, comment)));
+    }
     return { received: true };
   });
 

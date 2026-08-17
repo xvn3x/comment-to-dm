@@ -88,8 +88,12 @@ try {
   });
   assert.equal(mock.body.result, "queued");
 
-  await new Promise((resolve) => setTimeout(resolve, 1800));
-  const dashboard = await request("/api/dashboard", { headers: auth });
+  let dashboard;
+  const deadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    dashboard = await request("/api/dashboard", { headers: auth });
+  } while (dashboard.body.events[0]?.status !== "sent" && Date.now() < deadline);
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.body.connection.username, "demo_account");
   assert.equal(dashboard.body.events[0].status, "sent");

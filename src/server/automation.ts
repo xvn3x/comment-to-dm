@@ -9,26 +9,26 @@ export async function enqueueComment(sql: Db, comment: InstagramComment): Promis
   const rule = rules.find((candidate) => ruleMatches(candidate, comment));
   if (!rule) return "no_match";
 
-  const previous = await sql<{ id: string }[]>`
-    SELECT id FROM events
-    WHERE sender_id = ${comment.senderId}
-      AND media_id = ${comment.mediaId}
-      AND rule_id = ${rule.id}
-      AND status IN ('queued', 'processing', 'sent')
-    LIMIT 1
-  `;
-
   const eventId = randomUUID();
-  if (previous.length) {
-    await sql`
-      INSERT INTO events (id, comment_id, media_id, sender_id, username, rule_id, status, processed_at)
-      VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, ${rule.id}, 'skipped_duplicate', NOW())
-      ON CONFLICT (comment_id) DO NOTHING
-    `;
-    return "duplicate";
-  }
-
   return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${comment.senderId}:${comment.mediaId}:${rule.id}`}, 0))`;
+    const previous = await tx<{ id: string }[]>`
+      SELECT id FROM events
+      WHERE sender_id = ${comment.senderId}
+        AND media_id = ${comment.mediaId}
+        AND rule_id = ${rule.id}
+        AND status IN ('queued', 'processing', 'sent')
+      LIMIT 1
+    `;
+    if (previous.length) {
+      await tx`
+        INSERT INTO events (id, comment_id, media_id, sender_id, username, rule_id, status, processed_at)
+        VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, ${rule.id}, 'skipped_duplicate', NOW())
+        ON CONFLICT (comment_id) DO NOTHING
+      `;
+      return "duplicate" as const;
+    }
+
     const inserted = await tx<{ id: string }[]>`
       INSERT INTO events (id, comment_id, media_id, sender_id, username, rule_id, status)
       VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, ${rule.id}, 'queued')
@@ -55,7 +55,7 @@ export async function enqueueComment(sql: Db, comment: InstagramComment): Promis
           message: rule.dm_text,
           button: rule.button_text && rule.button_url ? { title: rule.button_text, url: rule.button_url } : undefined,
         })},
-        NOW() + INTERVAL '500 milliseconds'
+        NOW()
       )
     `;
     return "queued" as const;

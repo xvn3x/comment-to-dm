@@ -13,7 +13,7 @@ const schema = z.object({
   META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).default("v25.0"),
   META_WEBHOOK_VERIFY_TOKEN: z.string().min(16).default("local-webhook-verify-token"),
   QUEUE_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(1000),
-  JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(20),
 });
 
 export type AppConfig = z.infer<typeof schema>;

@@ -1,6 +1,6 @@
 {
   "name": "comment-to-dm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Self-hosted Instagram comment-to-DM automation for one professional account",
   "type": "module",
@@ -15,6 +15,7 @@
     "start": "node dist/server/index.js",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:integration": "node --import tsx scripts/integration.mjs",
+    "test:burst": "node scripts/burst-test.mjs",
     "lint": "eslint src tests",
     "generate:env": "node scripts/generate-env.mjs"
   },

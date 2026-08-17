@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS meta_connection (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS outbound_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS rate_limited_until TIMESTAMPTZ;
+ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS rate_limit_reason TEXT;
+ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS consecutive_rate_limits INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_meta_usage_percent INTEGER;
+ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_meta_response_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
   expires_at TIMESTAMPTZ NOT NULL
@@ -64,7 +71,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply')),
   payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'sent', 'failed', 'skipped')),
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'retry_wait', 'sent', 'failed', 'dead_letter', 'expired', 'skipped')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_error TEXT,
@@ -75,6 +82,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_queue_idx ON jobs (status, next_attempt_at, created_at);
+
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
+ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
+  CHECK (status IN ('queued', 'processing', 'retry_wait', 'sent', 'failed', 'dead_letter', 'expired', 'skipped'));
 `;
 
 export async function createDb(databaseUrl: string): Promise<Db> {
