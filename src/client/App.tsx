@@ -146,7 +146,7 @@ function TagInput({ values, onChange, placeholder, label }: { values: string[]; 
     }
     if (event.key === "Backspace" && !draft && values.length) onChange(values.slice(0, -1));
   }
-  return <div className="tag-input" aria-label={label}>{values.map((value) => <span className="input-tag" key={value}>{value}<button type="button" onClick={() => onChange(values.filter((item) => item !== value))} aria-label={`${label}: ${value}`}><X /></button></span>)}<input value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={keyDown} onBlur={() => commit()} placeholder={placeholder} /></div>;
+  return <div className="tag-input" aria-label={label}>{values.map((value) => <span className="input-tag" key={value}>{value}<button type="button" onClick={() => onChange(values.filter((item) => item !== value))} aria-label={`${label}: ${value}`}><X /></button></span>)}<input value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={keyDown} onBlur={(event) => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) window.setTimeout(() => commit(), 0); }} placeholder={placeholder} /></div>;
 }
 
 function VariantEditor({ values, onChange, addLabel, removeLabel }: { values: string[]; onChange: (values: string[]) => void; addLabel: string; removeLabel: string }) {
