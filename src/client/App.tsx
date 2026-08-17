@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
   Activity, ArrowLeft, Camera, Check, ChevronRight, CircleAlert, CirclePlay, Clock3, Copy, ExternalLink,
-  FileText, Gauge, Languages, Layers3, Link2, LockKeyhole, LogOut, Menu, MessageCircle,
-  Moon, MousePointerClick, Pause, Play, Plug, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck,
+  FileText, Gauge, ImageIcon, Languages, Layers3, Link2, LockKeyhole, LogOut, MessageCircle,
+  MessageCircleReply, Mic, Moon, MousePointerClick, Pause, Play, Plug, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck,
   Sun, Trash2, TriangleAlert, X, Zap,
 } from "lucide-react";
 import { api, ApiError } from "./api";
@@ -23,6 +23,22 @@ const defaultRule: RuleForm = {
   followUpEnabled: false, followUpDelayMinutes: 60,
   followUpText: "Не забудьте забрать материал — ссылка всё ещё доступна 👇",
 };
+
+function createDefaultRule(language: Language): RuleForm {
+  if (language === "ru") return { ...defaultRule };
+  return {
+    ...defaultRule,
+    name: "Comment guide",
+    keywords: "guide",
+    publicReplies: "Sent the information in Direct ✉️\nCheck your Direct — it is already there 🙌",
+    dmText: "Thanks for your comment! Tap the button below to get the material.",
+    buttonText: "Get the guide",
+    followGatePrompt: "Follow the account and tap the button below to get the material.",
+    followGateButtonText: "Done",
+    followGateRetryText: "I cannot see your follow yet. Follow the account and tap “Done” again.",
+    followUpText: "Do not forget to get the material — the link is still available 👇",
+  };
+}
 
 const navItems: Array<{ id: Exclude<Screen, "rule">; icon: typeof Zap }> = [
   { id: "automations", icon: Zap }, { id: "activity", icon: Activity },
@@ -113,6 +129,31 @@ function Empty({ icon, title, text }: { icon: ReactNode; title: string; text?: s
   return <div className="empty-state"><span>{icon}</span><strong>{title}</strong>{text && <p>{text}</p>}</div>;
 }
 
+function BrandIcon({ large = false }: { large?: boolean }) {
+  return <span className={`logo-mark ${large ? "large" : "small"}`} aria-hidden="true"><MessageCircleReply /></span>;
+}
+
+function TagInput({ values, onChange, placeholder, label }: { values: string[]; onChange: (values: string[]) => void; placeholder: string; label: string }) {
+  const [draft, setDraft] = useState("");
+  function commit(value = draft) {
+    const next = value.trim().replace(/,$/, "");
+    if (next && !values.some((item) => item.toLocaleLowerCase() === next.toLocaleLowerCase())) onChange([...values, next]);
+    setDraft("");
+  }
+  function keyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter" || event.key === "," || event.key === "Tab") {
+      if (draft.trim()) { event.preventDefault(); commit(); }
+    }
+    if (event.key === "Backspace" && !draft && values.length) onChange(values.slice(0, -1));
+  }
+  return <div className="tag-input" aria-label={label}>{values.map((value) => <span className="input-tag" key={value}>{value}<button type="button" onClick={() => onChange(values.filter((item) => item !== value))} aria-label={`${label}: ${value}`}><X /></button></span>)}<input value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={keyDown} onBlur={() => commit()} placeholder={placeholder} /></div>;
+}
+
+function VariantEditor({ values, onChange, addLabel, removeLabel }: { values: string[]; onChange: (values: string[]) => void; addLabel: string; removeLabel: string }) {
+  const rows = values.length ? values : [""];
+  return <div className="variant-editor"><div className="variant-list">{rows.map((value, index) => <div className="variant-row" key={index}><span>{String(index + 1).padStart(2, "0")}</span><textarea rows={2} value={value} onChange={(event) => { const next = [...rows]; next[index] = event.target.value; onChange(next); }} /><button type="button" onClick={() => onChange(rows.filter((_, itemIndex) => itemIndex !== index))} aria-label={removeLabel}><Trash2 /></button></div>)}</div><button type="button" className="add-variant" onClick={() => onChange([...rows, ""])}><Plus />{addLabel}</button></div>;
+}
+
 export function App() {
   const [language, setLanguage] = useState<Language>(initialLanguage);
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -123,14 +164,14 @@ export function App() {
   const [error, setError] = useState(() => new URLSearchParams(window.location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [rule, setRule] = useState<RuleForm>(defaultRule);
+  const [rule, setRule] = useState<RuleForm>(() => createDefaultRule(initialLanguage()));
   const [metaConfig, setMetaConfig] = useState({ appId: "", appSecret: "", graphVersion: "v25.0" });
+  const metaConfigDirty = useRef(false);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [mockComment, setMockComment] = useState("гайд");
   const [eventFilter, setEventFilter] = useState<"all" | "sent" | "failed">("all");
   const [eventSearch, setEventSearch] = useState("");
   const [selectedEvent, setSelectedEvent] = useState<EventDetails | null>(null);
-  const [mobileMenu, setMobileMenu] = useState(false);
   const t = copy[language];
 
   const connected = Boolean(dashboard?.connection.ig_user_id);
@@ -142,11 +183,20 @@ export function App() {
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("ctd-theme", theme); }, [theme]);
   useEffect(() => { document.documentElement.lang = language; localStorage.setItem("ctd-language", language); }, [language]);
+  useEffect(() => {
+    const markMetaConfigDirty = (event: Event) => {
+      if ((event.target as HTMLElement | null)?.closest(".connection-form")) metaConfigDirty.current = true;
+    };
+    document.addEventListener("input", markMetaConfigDirty, true);
+    return () => document.removeEventListener("input", markMetaConfigDirty, true);
+  }, []);
 
   async function refresh() {
     const data = await api<Dashboard>("/api/dashboard");
     setDashboard(data);
-    setMetaConfig((value) => ({ ...value, appId: data.connection.app_id ?? "", graphVersion: data.connection.graph_version ?? "v25.0" }));
+    if (!metaConfigDirty.current) {
+      setMetaConfig((value) => ({ ...value, appId: data.connection.app_id ?? "", graphVersion: data.connection.graph_version ?? "v25.0" }));
+    }
   }
 
   useEffect(() => {
@@ -197,13 +247,13 @@ export function App() {
     event.preventDefault(); setBusy(true); setError("");
     try {
       await api(editingId ? `/api/rules/${editingId}` : "/api/rules", { method: editingId ? "PUT" : "POST", body: JSON.stringify(rulePayload(rule)) });
-      setScreen("automations"); setEditingId(null); setRule(defaultRule); await refresh();
+      setScreen("automations"); setEditingId(null); setRule(createDefaultRule(language)); await refresh();
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : language === "ru" ? "Не удалось сохранить правило." : "Could not save the rule."); }
     finally { setBusy(false); }
   }
 
   function openRule(item?: Rule) {
-    setEditingId(item?.id ?? null); setRule(item ? ruleToForm(item) : { ...defaultRule }); setScreen("rule"); window.scrollTo({ top: 0, behavior: "smooth" });
+    setEditingId(item?.id ?? null); setRule(item ? ruleToForm(item) : createDefaultRule(language)); setScreen("rule"); window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function toggleRule(item: Rule, active: boolean) {
@@ -266,25 +316,24 @@ export function App() {
 
   if (!authenticated) return <main className="login-page">
     <div className="login-toolbar"><button className="icon-button" onClick={() => setLanguage(language === "ru" ? "en" : "ru")} aria-label="Language"><Languages size={19} /><span>{language.toUpperCase()}</span></button><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Theme">{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></div>
-    <section className="login-card"><div className="logo-mark"><span>C→D</span></div><p className="kicker">COMMENT TO DM · {t.selfHosted.toUpperCase()}</p><h1>{t.loginTitle}</h1><p className="lead">{t.loginText}</p>
+    <section className="login-card"><BrandIcon large /><p className="kicker">COMMENT TO DM · {t.selfHosted.toUpperCase()}</p><h1>{t.loginTitle}</h1><p className="lead">{t.loginText}</p>
       <div className="trust-row"><span><ShieldCheck />{t.selfHosted}</span><span><LockKeyhole />{t.encrypted}</span><span><Camera />{t.officialApi}</span></div>
       <form onSubmit={login} className="login-form"><label>{t.password}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus autoComplete="current-password" /></label>{error && <div className="inline-error"><CircleAlert />{error}</div>}<button className="button primary wide" disabled={busy}>{busy ? `${t.login}…` : t.login}<ChevronRight /></button></form>
     </section>
   </main>;
 
-  function navigate(next: Exclude<Screen, "rule">) { setScreen(next); setSelectedEvent(null); setMobileMenu(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function navigate(next: Exclude<Screen, "rule">) { setScreen(next); setSelectedEvent(null); window.scrollTo({ top: 0, behavior: "smooth" }); }
 
   return <div className="app-shell">
-    <header className="topbar"><button className="mobile-menu-button" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Menu"><Menu /></button><button className="brand-button" onClick={() => navigate("automations")}><span className="logo-mark small"><span>C→D</span></span><strong>Comment to DM</strong></button>
-      <nav className={mobileMenu ? "open" : ""}>{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} onClick={() => navigate(id)}><Icon />{t[id]}</button>)}</nav>
-      <div className="account-menu"><span className={`live-dot ${connected ? "online" : ""}`} /><span>{connected ? `@${dashboard?.connection.username ?? "Instagram"}` : t.disconnected}</span><button onClick={() => void logout()} aria-label={t.logout}><LogOut /></button></div></header>
-    {error && <div className="global-notice"><CircleAlert /><span>{error}</span><button onClick={() => setError("")}><X /></button></div>}
-    <main className="page-shell">{screen === "automations" && <DashboardView />}{screen === "activity" && <ActivityView />}{screen === "connection" && <ConnectionView />}{screen === "settings" && <SettingsView />}{screen === "rule" && <RuleEditor />}</main>
-    {screen !== "rule" && <nav className="bottom-nav">{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} onClick={() => navigate(id)}><Icon /><span>{t[id]}</span></button>)}</nav>}
+    <header className="topbar"><div className="topbar-main"><button className="brand-button" onClick={() => navigate("automations")}><BrandIcon /><strong>Comment to DM</strong></button><div className="account-menu"><span className={`live-dot ${connected ? "online" : ""}`} /><span>{connected ? `@${dashboard?.connection.username ?? "Instagram"}` : t.disconnected}</span><button onClick={() => void logout()} aria-label={t.logout}><LogOut /><span>{t.logout}</span></button></div></div>
+      <nav>{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} aria-current={screen === id ? "page" : undefined} onClick={() => navigate(id)}><Icon />{t[id]}</button>)}</nav></header>
+    {error && <div className="global-notice" role="alert"><CircleAlert /><span>{error}</span><button onClick={() => setError("")} aria-label={language === "ru" ? "Закрыть" : "Close"}><X /></button></div>}
+    <main className="page-shell">{screen === "automations" && DashboardView()}{screen === "activity" && ActivityView()}{screen === "connection" && ConnectionView()}{screen === "settings" && SettingsView()}{screen === "rule" && RuleEditor()}</main>
+    <nav className="bottom-nav">{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} aria-current={screen === id ? "page" : undefined} onClick={() => navigate(id)}><Icon /><span>{t[id]}</span></button>)}</nav>
   </div>;
 
-  function PageTitle({ title, eyebrow, subtitle, action }: { title: string; eyebrow?: string; subtitle?: string; action?: ReactNode }) {
-    return <div className="page-title"><div><p className="kicker">{eyebrow ?? `${t.today} · ${new Date().toLocaleDateString(language === "ru" ? "ru-RU" : "en-US", { day: "numeric", month: "long" })}`}</p><h1>{title}</h1>{subtitle && <p className="page-subtitle">{subtitle}</p>}</div>{action}</div>;
+  function PageTitle({ title, eyebrow, subtitle, action, compact = false }: { title: string; eyebrow?: string; subtitle?: string; action?: ReactNode; compact?: boolean }) {
+    return <div className={`page-title ${compact ? "compact" : ""}`}><div><p className="kicker">{eyebrow ?? `${t.today} · ${new Date().toLocaleDateString(language === "ru" ? "ru-RU" : "en-US", { day: "numeric", month: "long" })}`}</p><h1>{title}</h1>{subtitle && <p className="page-subtitle">{subtitle}</p>}</div>{action}</div>;
   }
 
   function DashboardView() {
@@ -335,16 +384,21 @@ export function App() {
   }
 
   function RuleEditor() {
-    return <><PageTitle title={editingId ? t.editRule : t.newRule} eyebrow={t.automations} action={<button className="button secondary" onClick={() => setScreen("automations")}><ArrowLeft />{t.back}</button>} /><form className="rule-editor-layout" onSubmit={saveRule}><div className="rule-editor-fields"><section className="card form-section"><div className="form-section-title"><span>01</span><div><h2>{language === "ru" ? "Основа правила" : "Rule basics"}</h2><p>{language === "ru" ? "Выберите событие и условия срабатывания." : "Choose the event and matching conditions."}</p></div></div><div className="form-two"><label>{t.ruleName}<input value={rule.name} onChange={(event) => setRule({ ...rule, name: event.target.value })} /></label><label>{t.priority}<input type="number" min={1} max={10000} value={rule.priority} onChange={(event) => setRule({ ...rule, priority: Number(event.target.value) })} /></label></div><div className="trigger-cards">{(["comment", "direct_message", "story_reply"] as TriggerType[]).map((value) => <button type="button" key={value} className={rule.triggerType === value ? "active" : ""} onClick={() => setRule({ ...rule, triggerType: value, targetScope: "all", publicReplyEnabled: value === "comment" ? rule.publicReplyEnabled : false, directMessageEnabled: value === "comment" ? rule.directMessageEnabled : true, followUpEnabled: value === "comment" && !rule.followGateEnabled ? false : rule.followUpEnabled })}>{value === "comment" ? <MessageCircle /> : value === "direct_message" ? <Send /> : <CirclePlay />}<span>{triggerName(value, language)}</span><Check /></button>)}</div><div className="form-two">{rule.triggerType === "comment" && <label>{t.publication}<select value={rule.targetScope} onChange={(event) => setRule({ ...rule, targetScope: event.target.value as RuleForm["targetScope"] })}><option value="all">{t.allMedia}</option><option value="specific">{t.specificMedia}</option></select></label>}<label>{t.match}<select value={rule.matchMode} onChange={(event) => setRule({ ...rule, matchMode: event.target.value as RuleForm["matchMode"] })}><option value="contains">{t.contains}</option><option value="exact">{t.exact}</option><option value="any">{t.any}</option></select></label></div>{rule.triggerType === "comment" && rule.targetScope === "specific" && <label>{t.publication}<select value={rule.mediaId} onChange={(event) => setRule({ ...rule, mediaId: event.target.value })}><option value="">{t.selectMedia}</option>{media.map((item) => <option key={item.id} value={item.id}>{`${item.mediaType === "VIDEO" ? "Reel" : "Post"} · ${(item.caption || item.id).slice(0, 80)}`}</option>)}</select></label>}{rule.matchMode !== "any" && <label>{t.keywords}<small>{t.commaSeparated}</small><input value={rule.keywords} onChange={(event) => setRule({ ...rule, keywords: event.target.value })} /></label>}</section>
-        {rule.triggerType === "comment" && <section className="card form-section"><div className="form-section-title"><span>02</span><div><h2>{language === "ru" ? "Действия" : "Actions"}</h2><p>{language === "ru" ? "Публичный ответ и Direct включаются независимо." : "Public reply and Direct can be enabled independently."}</p></div></div><SettingToggle title={t.commentReply} text={t.commentReplyHint} checked={rule.publicReplyEnabled} onChange={(checked) => setRule({ ...rule, publicReplyEnabled: checked })} />{rule.publicReplyEnabled && <label>{t.variants}<small>{t.onePerLine}</small><textarea rows={4} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}<SettingToggle title={t.sendDirect} text={t.directHint} checked={rule.directMessageEnabled} onChange={(checked) => setRule({ ...rule, directMessageEnabled: checked, followGateEnabled: checked && rule.followGateEnabled, followUpEnabled: checked && rule.followUpEnabled })} /></section>}
+        return <><PageTitle title={editingId ? t.editRule : t.newRule} eyebrow={t.automations} action={<button className="button secondary" onClick={() => setScreen("automations")}><ArrowLeft />{t.back}</button>} /><form className="rule-editor-layout" onSubmit={saveRule}><div className="rule-editor-fields"><section className="card form-section"><div className="form-section-title"><span>01</span><div><h2>{language === "ru" ? "Основа правила" : "Rule basics"}</h2><p>{language === "ru" ? "Выберите событие и условия срабатывания." : "Choose the event and matching conditions."}</p></div></div><div className="form-two"><label>{t.ruleName}<input value={rule.name} onChange={(event) => setRule({ ...rule, name: event.target.value })} /></label><label>{t.priority}<input type="number" min={1} max={10000} value={rule.priority} onChange={(event) => setRule({ ...rule, priority: Number(event.target.value) })} /></label></div><div className="trigger-cards">{(["comment", "direct_message", "story_reply"] as TriggerType[]).map((value) => <button type="button" key={value} className={rule.triggerType === value ? "active" : ""} onClick={() => setRule({ ...rule, triggerType: value, targetScope: "all", publicReplyEnabled: value === "comment" ? rule.publicReplyEnabled : false, directMessageEnabled: value === "comment" ? rule.directMessageEnabled : true, followUpEnabled: value === "comment" && !rule.followGateEnabled ? false : rule.followUpEnabled })}>{value === "comment" ? <MessageCircle /> : value === "direct_message" ? <Send /> : <CirclePlay />}<span>{triggerName(value, language)}</span><Check /></button>)}</div><div className="form-two">{rule.triggerType === "comment" && <label>{t.publication}<select value={rule.targetScope} onChange={(event) => setRule({ ...rule, targetScope: event.target.value as RuleForm["targetScope"] })}><option value="all">{t.allMedia}</option><option value="specific">{t.specificMedia}</option></select></label>}<label>{t.match}<select value={rule.matchMode} onChange={(event) => setRule({ ...rule, matchMode: event.target.value as RuleForm["matchMode"] })}><option value="contains">{t.contains}</option><option value="exact">{t.exact}</option><option value="any">{t.any}</option></select></label></div>{rule.triggerType === "comment" && rule.targetScope === "specific" && <label>{t.publication}<select value={rule.mediaId} onChange={(event) => setRule({ ...rule, mediaId: event.target.value })}><option value="">{t.selectMedia}</option>{media.map((item) => <option key={item.id} value={item.id}>{`${item.mediaType === "VIDEO" ? "Reel" : "Post"} · ${(item.caption || item.id).slice(0, 80)}`}</option>)}</select></label>}{rule.matchMode !== "any" && <label>{t.keywords}<small>{language === "ru" ? "Введите слово и нажмите Enter или запятую" : "Type a keyword and press Enter or comma"}</small><TagInput values={rule.keywords.split(",").map((value) => value.trim()).filter(Boolean)} onChange={(values) => setRule({ ...rule, keywords: values.join(", ") })} placeholder={language === "ru" ? "добавить…" : "add…"} label={t.keywords} /></label>}</section>
+        {rule.triggerType === "comment" && <section className="card form-section"><div className="form-section-title"><span>02</span><div><h2>{language === "ru" ? "Действия" : "Actions"}</h2><p>{language === "ru" ? "Публичный ответ и Direct включаются независимо." : "Public reply and Direct can be enabled independently."}</p></div></div><SettingToggle title={t.commentReply} text={t.commentReplyHint} checked={rule.publicReplyEnabled} onChange={(checked) => setRule({ ...rule, publicReplyEnabled: checked })} />{rule.publicReplyEnabled && <label>{t.variants}<small>{language === "ru" ? "Добавляйте варианты отдельно — приложение выберет один из них." : "Add each option separately — the app will pick one."}</small><VariantEditor values={rule.publicReplies.split("\n")} onChange={(values) => setRule({ ...rule, publicReplies: values.join("\n") })} addLabel={language === "ru" ? "Добавить вариант" : "Add option"} removeLabel={language === "ru" ? "Удалить вариант" : "Remove option"} /></label>}<SettingToggle title={t.sendDirect} text={t.directHint} checked={rule.directMessageEnabled} onChange={(checked) => setRule({ ...rule, directMessageEnabled: checked, followGateEnabled: checked && rule.followGateEnabled, followUpEnabled: checked && rule.followUpEnabled })} /></section>}
         {directEnabled && <section className="card form-section"><div className="form-section-title"><span>{rule.triggerType === "comment" ? "03" : "02"}</span><div><h2>{t.directMessage}</h2><p>{language === "ru" ? "Сообщение, кнопка материала и необязательные условия." : "Message, material button, and optional conditions."}</p></div></div><SettingToggle title={t.followGate} text={language === "ru" ? "Пользователь добровольно нажимает кнопку, после чего Meta разрешает проверку." : "The user voluntarily taps a button before Meta allows the check."} checked={rule.followGateEnabled} onChange={(checked) => setRule({ ...rule, followGateEnabled: checked, followUpEnabled: !checked && rule.triggerType === "comment" ? false : rule.followUpEnabled })} />{rule.followGateEnabled && <><label>{t.firstDirect}<textarea rows={3} value={rule.followGatePrompt} onChange={(event) => setRule({ ...rule, followGatePrompt: event.target.value })} /></label><div className="form-two"><label>{t.checkButton}<input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label><label>{t.notFollowing}<textarea rows={3} value={rule.followGateRetryText} onChange={(event) => setRule({ ...rule, followGateRetryText: event.target.value })} /></label></div></>}<label>{rule.followGateEnabled ? t.finalMessage : t.directMessage}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label><div className="form-two"><label>{t.buttonText}<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>{t.buttonUrl}<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div><SettingToggle title={t.followUp} text={rule.triggerType === "comment" && !rule.followGateEnabled ? (language === "ru" ? "Для комментария доступно после добровольной кнопки проверки подписки." : "For comment triggers, this is available after the voluntary follow-check button.") : (language === "ru" ? "Отменяется автоматически после клика." : "Cancelled automatically after the click.")} checked={rule.followUpEnabled} disabled={rule.triggerType === "comment" && !rule.followGateEnabled} onChange={(checked) => setRule({ ...rule, followUpEnabled: checked })} />{rule.followUpEnabled && <div className="form-two"><label>{t.delay}<input type="number" min={1} max={1320} value={rule.followUpDelayMinutes} onChange={(event) => setRule({ ...rule, followUpDelayMinutes: Number(event.target.value) })} /></label><label>{t.followUpText}<textarea rows={3} value={rule.followUpText} onChange={(event) => setRule({ ...rule, followUpText: event.target.value })} /></label></div>}</section>}
-        <section className="card form-footer"><SettingToggle title={t.active} text={language === "ru" ? "Неактивное правило сохраняется, но не запускается." : "An inactive rule is saved but never triggered."} checked={rule.active} onChange={(checked) => setRule({ ...rule, active: checked })} /><div><button type="button" className="button secondary" onClick={() => setScreen("automations")}>{t.cancel}</button><button className="button primary" disabled={busy}>{busy ? `${t.save}…` : t.save}</button></div></section></div><aside className="preview-column"><p className="kicker">{t.preview}</p><InstagramPreview /></aside></form></>;
+        <section className="card form-footer"><SettingToggle title={t.active} text={language === "ru" ? "Неактивное правило сохраняется, но не запускается." : "An inactive rule is saved but never triggered."} checked={rule.active} onChange={(checked) => setRule({ ...rule, active: checked })} /><div><button type="button" className="button secondary" onClick={() => setScreen("automations")}>{t.cancel}</button><button className="button primary" disabled={busy}>{busy ? `${t.save}…` : t.save}</button></div></section></div><aside className="preview-column"><InstagramPreview /></aside></form></>;
   }
 
   function SettingToggle({ title, text, checked, onChange, disabled = false }: { title: string; text: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) { return <div className={`setting-toggle ${disabled ? "disabled" : ""}`}><div><strong>{title}</strong><p>{text}</p></div><Toggle checked={checked} onChange={(value) => !disabled && onChange(value)} label={title} /></div>; }
 
   function InstagramPreview() {
-    const reply = rule.publicReplies.split("\n").find(Boolean) ?? t.commentReply; const message = rule.followGateEnabled ? rule.followGatePrompt : rule.dmText;
-    return <div className="phone-preview"><div className="phone-top"><ArrowLeft /><span className="avatar">IG</span><div><strong>{dashboard?.connection.username ?? "your_account"}</strong><small>{language === "ru" ? "Бизнес-чат" : "Business chat"}</small></div><Camera /></div><div className="phone-body">{rule.triggerType === "comment" && rule.publicReplyEnabled && <div className="preview-context"><MessageCircle /><span>{language === "ru" ? "Ответ под комментарием" : "Reply under comment"}: “{reply}”</span></div>}{directEnabled ? <><div className="ig-system">{dashboard?.connection.username ?? "your_account"} {language === "ru" ? "ответил(-а) на ваш комментарий" : "replied to your comment"}</div><div className="ig-bubble">{message || t.directMessage}{rule.followGateEnabled ? <button type="button">{rule.followGateButtonText || t.check}</button> : rule.buttonText && rule.buttonUrl ? <button type="button">{rule.buttonText}</button> : null}</div>{rule.followGateEnabled && <><div className="ig-user-bubble">{rule.followGateButtonText || t.check}</div><div className="ig-bubble">{rule.dmText || t.finalMessage}{rule.buttonText && rule.buttonUrl && <button type="button">{rule.buttonText}</button>}</div></>}</> : <div className="preview-only-comment"><MessageCircle /><strong>{language === "ru" ? "Только публичный ответ" : "Public reply only"}</strong><p>{reply}</p></div>}</div><div className="phone-input">{language === "ru" ? "Напишите сообщение…" : "Message…"}<Plus /></div></div>;
+    const reply = rule.publicReplies.split("\n").find(Boolean) ?? t.commentReply;
+    const account = dashboard?.connection.username ?? "studio.mono";
+    const initials = account.split(/[._-]/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "SM";
+    const message = rule.followGateEnabled ? rule.followGatePrompt : rule.dmText;
+    return <section className="preview-card card"><div className="preview-heading"><strong>{t.preview}</strong><span><Camera />Direct</span></div><div className="phone-preview"><div className="phone-top"><ChevronRight className="preview-back" /><span className="avatar">{initials}</span><div><strong>{account}</strong><small>{language === "ru" ? "Бизнес-чат" : "Business chat"}</small></div></div><div className="phone-body">
+      {directEnabled ? <>{rule.triggerType === "comment" && <div className="ig-system">{language === "ru" ? `${account} написал(-а) вам о комментарии, который вы добавили к его публикации. Посмотреть публикацию` : `${account} messaged you about a comment you left on their post. View post`}</div>}<div className="ig-message-row"><span className="ig-avatar">{initials}</span><div className="ig-bubble">{message || t.directMessage}{(rule.followGateEnabled ? rule.followGateButtonText : rule.buttonText) && <button type="button">{rule.followGateEnabled ? rule.followGateButtonText : rule.buttonText}</button>}</div></div>{rule.followGateEnabled && <><div className="ig-user-bubble">{rule.followGateButtonText || t.check}</div><div className="ig-message-row"><span className="ig-avatar">{initials}</span><div className="ig-bubble retry">{rule.followGateRetryText || t.notFollowing}</div></div></>}</> : <div className="preview-only-comment"><MessageCircle /><strong>{language === "ru" ? "Только публичный ответ" : "Public reply only"}</strong><p>{reply}</p></div>}
+    </div><div className="phone-input"><span><Camera /></span><em>{language === "ru" ? "Напишите сообщение…" : "Message…"}</em><Mic /><ImageIcon /></div></div><p className="preview-note">{language === "ru" ? "Так это увидит человек в Instagram. Ответ под комментарием отправляется отдельно." : "This is what the person sees in Instagram. The public comment reply is sent separately."}</p></section>;
   }
 }
