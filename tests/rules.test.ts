@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractComments } from "../src/server/automation.js";
+import { extractComments, extractMessagingActions } from "../src/server/automation.js";
 import { ruleMatches, type RuleRecord } from "../src/server/rules.js";
 
 const baseRule: RuleRecord = {
@@ -47,4 +47,16 @@ test("webhook parser recognizes direct entry payloads and self comments", () => 
   } }] });
   assert.equal(result.length, 1);
   assert.equal(result[0]?.isSelf, true);
+});
+
+test("webhook parser extracts quick replies and postbacks", () => {
+  const actions = extractMessagingActions({ entry: [{ messaging: [
+    { sender: { id: "user-1" }, timestamp: 100, message: { mid: "mid-1", quick_reply: { payload: "follow_gate:event-1" } } },
+    { sender: { id: "user-2" }, timestamp: 200, postback: { mid: "mid-2", payload: "follow_gate:event-2" } },
+    { sender: { id: "user-3" }, message: { text: "ordinary message" } },
+  ] }] });
+  assert.deepEqual(actions, [
+    { senderId: "user-1", interactionId: "mid-1", payload: "follow_gate:event-1" },
+    { senderId: "user-2", interactionId: "mid-2", payload: "follow_gate:event-2" },
+  ]);
 });

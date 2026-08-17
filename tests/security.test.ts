@@ -7,7 +7,9 @@ test("encrypted secrets round-trip and reject tampering", () => {
   const box = new SecretBox(randomBytes(32).toString("base64"));
   const encrypted = box.seal("IGAA-secret-token");
   assert.equal(box.open(encrypted), "IGAA-secret-token");
-  assert.throws(() => box.open(`${encrypted.slice(0, -1)}x`));
+  const parts = encrypted.split(".");
+  parts[2] = `${parts[2][0] === "A" ? "B" : "A"}${parts[2].slice(1)}`;
+  assert.throws(() => box.open(parts.join(".")));
 });
 
 test("admin sessions are signed and expire", () => {

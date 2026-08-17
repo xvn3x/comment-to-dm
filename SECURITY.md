@@ -11,7 +11,7 @@ Do not publish access tokens, App Secrets, server addresses, logs, or proof-of-c
 - Webhook payloads are accepted only after `X-Hub-Signature-256` verification in live mode.
 - Meta deauthorization and data-deletion callbacks require a valid signed request.
 - The admin session is an HTTP-only, same-site cookie. Mutating API calls also enforce same-origin requests.
-- Comment text and DM conversations are not retained. The event log keeps technical identifiers and status for 30 days.
+- Comment text and DM conversations are not retained. Optional follower gates keep only the quick-reply interaction ID, scoped sender ID, follower-check status and configured response; delivery data is removed with its event after 30 days.
 - PostgreSQL is not exposed outside the Docker network.
 
 ## Operator responsibilities

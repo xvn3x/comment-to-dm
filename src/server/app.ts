@@ -10,7 +10,7 @@ import rawBody from "fastify-raw-body";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import type { Db } from "./db.js";
-import { enqueueComment, extractComments } from "./automation.js";
+import { enqueueComment, extractComments, extractMessagingActions } from "./automation.js";
 import { MetaClient } from "./meta.js";
 import { retryDecision } from "./rate-control.js";
 import { privacyPolicyHtml } from "./privacy.js";
@@ -41,6 +41,10 @@ const ruleSchema = z.object({
   dmText: z.string().trim().min(1).max(640),
   buttonText: z.string().trim().min(1).max(20).nullable().optional(),
   buttonUrl: z.string().url().refine((url) => url.startsWith("https://"), "Only HTTPS links are allowed").nullable().optional(),
+  followGateEnabled: z.boolean().default(false),
+  followGatePrompt: z.string().trim().min(1).max(640).nullable().optional(),
+  followGateButtonText: z.string().trim().min(1).max(20).nullable().optional(),
+  followGateRetryText: z.string().trim().min(1).max(640).nullable().optional(),
 }).superRefine((value, context) => {
   if (value.targetScope === "specific" && !value.mediaId) {
     context.addIssue({ code: "custom", path: ["mediaId"], message: "Media ID is required" });
@@ -57,6 +61,14 @@ const ruleSchema = z.object({
   if (Buffer.byteLength(value.dmText, "utf8") > 1000) {
     context.addIssue({ code: "custom", path: ["dmText"], message: "Direct message exceeds 1000 UTF-8 bytes" });
   }
+  if (value.followGateEnabled) {
+    if (!value.followGatePrompt) context.addIssue({ code: "custom", path: ["followGatePrompt"], message: "Add the first Direct message" });
+    if (!value.followGateButtonText) context.addIssue({ code: "custom", path: ["followGateButtonText"], message: "Add the check button title" });
+    if (!value.followGateRetryText) context.addIssue({ code: "custom", path: ["followGateRetryText"], message: "Add the retry message" });
+    for (const [path, text] of [["followGatePrompt", value.followGatePrompt], ["followGateRetryText", value.followGateRetryText]] as const) {
+      if (text && Buffer.byteLength(text, "utf8") > 1000) context.addIssue({ code: "custom", path: [path], message: "Message exceeds 1000 UTF-8 bytes" });
+    }
+  }
   value.publicReplies.forEach((text, index) => {
     if (Buffer.byteLength(text, "utf8") > 1000) {
       context.addIssue({ code: "custom", path: ["publicReplies", index], message: "Public reply exceeds 1000 UTF-8 bytes" });
@@ -71,6 +83,9 @@ function toRuleValues(value: z.infer<typeof ruleSchema>) {
     publicReplies: value.publicReplyEnabled ? value.publicReplies : [],
     buttonText: value.buttonText || null,
     buttonUrl: value.buttonUrl || null,
+    followGatePrompt: value.followGateEnabled ? value.followGatePrompt || null : null,
+    followGateButtonText: value.followGateEnabled ? value.followGateButtonText || null : null,
+    followGateRetryText: value.followGateEnabled ? value.followGateRetryText || null : null,
   };
 }
 
@@ -292,7 +307,7 @@ export async function buildApp(sql: Db, config: AppConfig) {
       // subscribed_apps edge expects the professional account ID returned by
       // /me as user_id, so use the resolved profile ID from this point on.
       const context = { ...oauthContext, igUserId: profile.id };
-      await meta.subscribeToComments(context);
+      await meta.subscribeToWebhooks(context);
       await sql`
         UPDATE meta_connection SET ig_user_id = ${profile.id}, username = ${profile.username ?? null},
           token_enc = ${box.seal(token.accessToken)},
@@ -330,11 +345,12 @@ export async function buildApp(sql: Db, config: AppConfig) {
       const context = { igUserId: connection.ig_user_id, token: box.open(connection.token_enc), graphVersion: connection.graph_version };
       const profile = await meta.profile(context);
       let fields = await meta.subscribedFields(context);
-      if (!fields.includes("comments")) {
-        await meta.subscribeToComments(context);
+      const requiredFields = ["comments", "messages", "messaging_postbacks"];
+      if (requiredFields.some((field) => !fields.includes(field))) {
+        await meta.subscribeToWebhooks(context);
         fields = await meta.subscribedFields(context);
       }
-      if (!fields.includes("comments")) throw new Error("comments webhook subscription is missing");
+      if (requiredFields.some((field) => !fields.includes(field))) throw new Error("Instagram webhook subscriptions are missing");
       await sql`
         UPDATE meta_connection SET username = ${profile.username ?? null}, health_state = 'healthy',
           health_reason = NULL, health_since = NOW(), next_health_probe_at = NULL,
@@ -418,11 +434,13 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const rows = await sql`
       INSERT INTO rules (
         id, name, active, priority, target_scope, media_id, match_mode, keywords,
-        public_reply_enabled, public_replies, dm_text, button_text, button_url
+        public_reply_enabled, public_replies, dm_text, button_text, button_url,
+        follow_gate_enabled, follow_gate_prompt, follow_gate_button_text, follow_gate_retry_text
       ) VALUES (
         ${randomUUID()}, ${value.name}, ${value.active}, ${value.priority}, ${value.targetScope}, ${value.mediaId},
         ${value.matchMode}, ${sql.json(value.keywords)}, ${value.publicReplyEnabled}, ${sql.json(value.publicReplies)},
-        ${value.dmText}, ${value.buttonText}, ${value.buttonUrl}
+        ${value.dmText}, ${value.buttonText}, ${value.buttonUrl}, ${value.followGateEnabled},
+        ${value.followGatePrompt}, ${value.followGateButtonText}, ${value.followGateRetryText}
       ) RETURNING *
     `;
     return reply.code(201).send(rows[0]);
@@ -438,7 +456,10 @@ export async function buildApp(sql: Db, config: AppConfig) {
         target_scope = ${value.targetScope}, media_id = ${value.mediaId}, match_mode = ${value.matchMode},
         keywords = ${sql.json(value.keywords)}, public_reply_enabled = ${value.publicReplyEnabled},
         public_replies = ${sql.json(value.publicReplies)}, dm_text = ${value.dmText},
-        button_text = ${value.buttonText}, button_url = ${value.buttonUrl}, updated_at = NOW()
+        button_text = ${value.buttonText}, button_url = ${value.buttonUrl},
+        follow_gate_enabled = ${value.followGateEnabled}, follow_gate_prompt = ${value.followGatePrompt},
+        follow_gate_button_text = ${value.followGateButtonText}, follow_gate_retry_text = ${value.followGateRetryText},
+        updated_at = NOW()
       WHERE id = ${id.data} RETURNING *
     `;
     return rows[0] ?? reply.code(404).send({ error: "rule_not_found" });
@@ -498,17 +519,75 @@ export async function buildApp(sql: Db, config: AppConfig) {
       ...comment,
       isSelf: comment.isSelf || Boolean(connectedId && comment.senderId === connectedId),
     }));
+    const messagingActions = extractMessagingActions(request.body)
+      .filter((action) => action.payload.startsWith("follow_gate:"));
     const hasInstagramEntries = Boolean(request.body && typeof request.body === "object"
       && Array.isArray((request.body as { entry?: unknown }).entry)
       && (request.body as { entry: unknown[] }).entry.length);
     await sql`
       UPDATE meta_connection SET last_webhook_at = NOW(),
-        last_webhook_error = ${hasInstagramEntries && comments.length === 0 ? "Instagram webhook contained no recognized comment events." : null},
-        unparsed_webhooks = unparsed_webhooks + ${hasInstagramEntries && comments.length === 0 ? 1 : 0}, updated_at = NOW()
+        last_webhook_error = ${hasInstagramEntries && comments.length === 0 && messagingActions.length === 0 ? "Instagram webhook contained no recognized events." : null},
+        unparsed_webhooks = unparsed_webhooks + ${hasInstagramEntries && comments.length === 0 && messagingActions.length === 0 ? 1 : 0}, updated_at = NOW()
       WHERE singleton = TRUE
     `;
     for (let index = 0; index < comments.length; index += 20) {
       await Promise.all(comments.slice(index, index + 20).map((comment) => enqueueComment(sql, comment)));
+    }
+    for (const action of messagingActions) {
+      const eventId = action.payload.slice("follow_gate:".length);
+      if (!z.string().uuid().safeParse(eventId).success) continue;
+      const sessions = await sql<{
+        event_id: string; scoped_user_id: string | null; status: string; final_message: string;
+        final_button_text: string | null; final_button_url: string | null;
+        check_button_text: string; retry_message: string;
+      }[]>`
+        SELECT * FROM follow_gate_sessions WHERE event_id = ${eventId}
+      `;
+      const session = sessions[0];
+      if (!session || session.status === "delivered") continue;
+      if (session.scoped_user_id && session.scoped_user_id !== action.senderId) {
+        request.log.warn({ eventId, senderId: action.senderId }, "Ignored follow gate action from another user");
+        continue;
+      }
+      const connections = await sql<{ ig_user_id: string | null; token_enc: string | null; graph_version: string }[]>`
+        SELECT ig_user_id, token_enc, graph_version FROM meta_connection WHERE singleton = TRUE
+      `;
+      const connection = connections[0];
+      if (!connection?.ig_user_id || !connection.token_enc) return reply.code(503).send({ error: "instagram_not_connected" });
+      const follow = await meta.userFollowStatus({
+        igUserId: connection.ig_user_id,
+        token: box.open(connection.token_enc),
+        graphVersion: connection.graph_version,
+      }, action.senderId);
+      const followed = follow.isUserFollowBusiness;
+      const jobPayload = followed ? {
+        scopedUserId: action.senderId,
+        message: session.final_message,
+        button: session.final_button_text && session.final_button_url
+          ? { title: session.final_button_text, url: session.final_button_url } : undefined,
+        sessionStatus: "delivered",
+        expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
+      } : {
+        scopedUserId: action.senderId,
+        message: session.retry_message,
+        quickReply: { title: session.check_button_text, payload: `follow_gate:${eventId}` },
+        sessionStatus: "awaiting_follow",
+        expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
+      };
+      await sql.begin(async (tx) => {
+        const inserted = await tx`
+          INSERT INTO jobs (id, event_id, kind, interaction_id, payload)
+          VALUES (${randomUUID()}, ${eventId}, 'direct_message', ${action.interactionId}, ${tx.json(jobPayload)})
+          ON CONFLICT DO NOTHING RETURNING id
+        `;
+        if (!inserted.length) return;
+        await tx`
+          UPDATE follow_gate_sessions SET scoped_user_id = ${action.senderId}, last_checked_at = NOW(),
+            status = ${followed ? "awaiting_interaction" : "awaiting_follow"}, last_error = NULL, updated_at = NOW()
+          WHERE event_id = ${eventId}
+        `;
+        await tx`UPDATE events SET status = 'queued', processed_at = NULL, error_message = NULL WHERE id = ${eventId}`;
+      });
     }
     return { received: true };
   });

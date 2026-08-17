@@ -47,20 +47,74 @@ export async function enqueueComment(sql: Db, comment: InstagramComment): Promis
         VALUES (${randomUUID()}, ${eventId}, 'public_reply', ${tx.json({ commentId: comment.commentId, message: publicMessage })})
       `;
     }
+    if (rule.follow_gate_enabled) {
+      await tx`
+        INSERT INTO follow_gate_sessions (
+          event_id, final_message, final_button_text, final_button_url,
+          check_button_text, retry_message
+        ) VALUES (
+          ${eventId}, ${rule.dm_text}, ${rule.button_text}, ${rule.button_url},
+          ${rule.follow_gate_button_text!}, ${rule.follow_gate_retry_text!}
+        )
+      `;
+    }
     await tx`
       INSERT INTO jobs (id, event_id, kind, payload, next_attempt_at)
       VALUES (
         ${randomUUID()}, ${eventId}, 'private_reply',
         ${tx.json({
           commentId: comment.commentId,
-          message: rule.dm_text,
-          button: rule.button_text && rule.button_url ? { title: rule.button_text, url: rule.button_url } : undefined,
+          message: rule.follow_gate_enabled ? rule.follow_gate_prompt : rule.dm_text,
+          button: !rule.follow_gate_enabled && rule.button_text && rule.button_url
+            ? { title: rule.button_text, url: rule.button_url } : undefined,
+          quickReply: rule.follow_gate_enabled
+            ? { title: rule.follow_gate_button_text, payload: `follow_gate:${eventId}` } : undefined,
+          followGate: rule.follow_gate_enabled,
         })},
         NOW()
       )
     `;
     return "queued" as const;
   });
+}
+
+export type InstagramMessagingAction = {
+  senderId: string;
+  interactionId: string;
+  payload: string;
+};
+
+export function extractMessagingActions(payload: unknown): InstagramMessagingAction[] {
+  if (!payload || typeof payload !== "object") return [];
+  const entries = Array.isArray((payload as { entry?: unknown }).entry)
+    ? (payload as { entry: unknown[] }).entry : [];
+  const actions: InstagramMessagingAction[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const messaging = Array.isArray((entry as { messaging?: unknown }).messaging)
+      ? (entry as { messaging: unknown[] }).messaging : [];
+    for (const item of messaging) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      const sender = record.sender && typeof record.sender === "object"
+        ? record.sender as Record<string, unknown> : {};
+      const message = record.message && typeof record.message === "object"
+        ? record.message as Record<string, unknown> : {};
+      const quickReply = message.quick_reply && typeof message.quick_reply === "object"
+        ? message.quick_reply as Record<string, unknown> : {};
+      const postback = record.postback && typeof record.postback === "object"
+        ? record.postback as Record<string, unknown> : {};
+      const actionPayload = quickReply.payload ?? postback.payload;
+      if (!sender.id || typeof actionPayload !== "string") continue;
+      const messageId = message.mid ?? postback.mid;
+      actions.push({
+        senderId: String(sender.id),
+        interactionId: messageId ? String(messageId) : `${sender.id}:${record.timestamp ?? actionPayload}`,
+        payload: actionPayload,
+      });
+    }
+  }
+  return actions;
 }
 
 export function extractComments(payload: unknown): InstagramComment[] {

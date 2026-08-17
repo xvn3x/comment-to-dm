@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS rules (
   dm_text TEXT NOT NULL,
   button_text TEXT,
   button_url TEXT,
+  follow_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  follow_gate_prompt TEXT,
+  follow_gate_button_text TEXT,
+  follow_gate_retry_text TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK ((target_scope = 'all' AND media_id IS NULL) OR (target_scope = 'specific' AND media_id IS NOT NULL)),
@@ -94,7 +98,8 @@ CREATE INDEX IF NOT EXISTS events_dedupe_idx ON events (sender_id, media_id, rul
 CREATE TABLE IF NOT EXISTS jobs (
   id UUID PRIMARY KEY,
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply')),
+  kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply', 'direct_message')),
+  interaction_id TEXT UNIQUE,
   payload JSONB NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'retry_wait', 'uncertain', 'sent', 'failed', 'dead_letter', 'expired', 'skipped')),
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -106,11 +111,31 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_error_action TEXT,
   external_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (event_id, kind)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS jobs_queue_idx ON jobs (status, next_attempt_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_initial_kind_unique_idx
+  ON jobs (event_id, kind) WHERE kind IN ('public_reply', 'private_reply');
+
+CREATE TABLE IF NOT EXISTS follow_gate_sessions (
+  event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+  scoped_user_id TEXT,
+  status TEXT NOT NULL DEFAULT 'awaiting_interaction'
+    CHECK (status IN ('awaiting_interaction', 'awaiting_follow', 'delivered', 'failed')),
+  final_message TEXT NOT NULL,
+  final_button_text TEXT,
+  final_button_url TEXT,
+  check_button_text TEXT NOT NULL,
+  retry_message TEXT NOT NULL,
+  last_checked_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK ((final_button_text IS NULL AND final_button_url IS NULL) OR
+         (final_button_text IS NOT NULL AND final_button_url IS NOT NULL))
+);
 `;
 
 const migrations = [
@@ -152,6 +177,44 @@ const migrations = [
       ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
       ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
         CHECK (status IN ('queued', 'processing', 'retry_wait', 'uncertain', 'sent', 'failed', 'dead_letter', 'expired', 'skipped'));
+    `,
+  },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_gate_prompt TEXT;
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_gate_button_text TEXT;
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_gate_retry_text TEXT;
+
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS interaction_id TEXT;
+      ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_event_id_kind_key;
+      ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
+      ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
+        CHECK (kind IN ('public_reply', 'private_reply', 'direct_message'));
+      CREATE UNIQUE INDEX IF NOT EXISTS jobs_interaction_id_unique_idx
+        ON jobs (interaction_id) WHERE interaction_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS jobs_initial_kind_unique_idx
+        ON jobs (event_id, kind) WHERE kind IN ('public_reply', 'private_reply');
+
+      CREATE TABLE IF NOT EXISTS follow_gate_sessions (
+        event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+        scoped_user_id TEXT,
+        status TEXT NOT NULL DEFAULT 'awaiting_interaction'
+          CHECK (status IN ('awaiting_interaction', 'awaiting_follow', 'delivered', 'failed')),
+        final_message TEXT NOT NULL,
+        final_button_text TEXT,
+        final_button_url TEXT,
+        check_button_text TEXT NOT NULL,
+        retry_message TEXT NOT NULL,
+        last_checked_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK ((final_button_text IS NULL AND final_button_url IS NULL) OR
+               (final_button_text IS NOT NULL AND final_button_url IS NOT NULL))
+      );
     `,
   },
 ];

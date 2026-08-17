@@ -131,7 +131,11 @@ function sentResult(body: Record<string, unknown>, idField: "id" | "message_id")
     ? String(body[idField])
     : "";
   if (!externalId) throw new MetaAmbiguousError(`Meta returned success without ${idField}.`);
-  return { externalId, usagePercent: positiveNumber(body.__usagePercent) };
+  return {
+    externalId,
+    usagePercent: positiveNumber(body.__usagePercent),
+    recipientId: body.recipient_id ? String(body.recipient_id) : undefined,
+  };
 }
 
 export class MetaClient {
@@ -235,19 +239,19 @@ export class MetaClient {
     };
   }
 
-  async subscribeToComments(context: SendContext): Promise<void> {
+  async subscribeToWebhooks(context: SendContext): Promise<void> {
     if (this.config.META_MODE === "mock") return;
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/subscribed_apps`;
     const body = await this.request(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ subscribed_fields: ["comments"] }),
+      body: JSON.stringify({ subscribed_fields: ["comments", "messages", "messaging_postbacks"] }),
     }, "write");
     if (body.success !== true) throw new MetaAmbiguousError("Meta did not confirm the webhook subscription.");
   }
 
   async subscribedFields(context: SendContext): Promise<string[]> {
-    if (this.config.META_MODE === "mock") return ["comments"];
+    if (this.config.META_MODE === "mock") return ["comments", "messages", "messaging_postbacks"];
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/subscribed_apps`;
     const body = await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } });
     const entries = Array.isArray(body.data) ? body.data : [];
@@ -296,7 +300,7 @@ export class MetaClient {
   }
 
   async publicReply(context: SendContext, commentId: string, message: string) {
-    if (this.config.META_MODE === "mock") return { externalId: `mock-public-${Date.now()}`, usagePercent: undefined };
+    if (this.config.META_MODE === "mock") return { externalId: `mock-public-${Date.now()}`, usagePercent: undefined, recipientId: undefined };
     const url = `https://graph.instagram.com/${context.graphVersion}/${commentId}/replies`;
     const body = await this.request(url, {
       method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
@@ -325,13 +329,43 @@ export class MetaClient {
     commentId: string,
     message: string,
     button?: { title: string; url: string },
+    quickReply?: { title: string; payload: string },
   ) {
-    if (this.config.META_MODE === "mock") return { externalId: `mock-private-${Date.now()}`, usagePercent: undefined };
+    if (this.config.META_MODE === "mock") return {
+      externalId: `mock-private-${Date.now()}`, usagePercent: undefined, recipientId: "mock-user-demo_follower",
+    };
     const body = button
       ? { recipient: { comment_id: commentId }, message: { attachment: { type: "template", payload: {
           template_type: "button", text: message, buttons: [{ type: "web_url", title: button.title, url: button.url }],
         } } } }
-      : { recipient: { comment_id: commentId }, message: { text: message } };
+      : { recipient: { comment_id: commentId }, message: {
+          text: message,
+          ...(quickReply ? { quick_replies: [{ content_type: "text", title: quickReply.title, payload: quickReply.payload }] } : {}),
+        } };
+    const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/messages`;
+    const result = await this.request(url, {
+      method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, "write");
+    return sentResult(result, "message_id");
+  }
+
+  async directMessage(
+    context: SendContext,
+    scopedUserId: string,
+    message: string,
+    button?: { title: string; url: string },
+    quickReply?: { title: string; payload: string },
+  ) {
+    if (this.config.META_MODE === "mock") return { externalId: `mock-direct-${Date.now()}`, usagePercent: undefined, recipientId: undefined };
+    const body = button
+      ? { recipient: { id: scopedUserId }, message: { attachment: { type: "template", payload: {
+          template_type: "button", text: message, buttons: [{ type: "web_url", title: button.title, url: button.url }],
+        } } } }
+      : { recipient: { id: scopedUserId }, message: {
+          text: message,
+          ...(quickReply ? { quick_replies: [{ content_type: "text", title: quickReply.title, payload: quickReply.payload }] } : {}),
+        } };
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/messages`;
     const result = await this.request(url, {
       method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },

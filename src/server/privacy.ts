@@ -40,12 +40,13 @@ export function privacyPolicyHtml(): string {
       <li>the connected professional Instagram account ID and username;</li>
       <li>an Instagram OAuth access token, stored encrypted;</li>
       <li>comment, media and sender identifiers, and the commenter's public username;</li>
+      <li>quick-reply interaction identifiers and follower status when a rule requires a voluntary subscription check;</li>
       <li>automation rules, delivery status and timestamps.</li>
     </ul>
     <p>Comment text is evaluated in memory to match a rule and is not stored in the event journal. The application never asks for or stores an Instagram password.</p>
 
     <h2>3. How data is used</h2>
-    <p>Data is used only to authenticate the connected account, receive Instagram webhook events, match comments against rules, send configured public replies and private messages, prevent duplicate processing, display delivery history, and maintain security.</p>
+    <p>Data is used only to authenticate the connected account, receive Instagram webhook events, match comments against rules, optionally verify a subscription after the user taps a quick reply, send configured public replies and private messages, prevent duplicate processing, display delivery history, and maintain security.</p>
 
     <h2>4. Storage and sharing</h2>
     <p>Data is stored in the database selected by the installation operator. Access tokens and Meta application secrets are encrypted at rest by the application. Data is sent to Meta only as needed to use the Instagram API and may be processed by the hosting and database providers selected by the operator. The application does not sell personal data or use it for advertising.</p>

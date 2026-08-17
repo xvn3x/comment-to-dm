@@ -8,8 +8,17 @@ import { SecretBox } from "./security.js";
 type Job = {
   id: string;
   event_id: string;
-  kind: "public_reply" | "private_reply";
-  payload: { commentId: string; message: string; button?: { title: string; url: string } };
+  kind: "public_reply" | "private_reply" | "direct_message";
+  payload: {
+    commentId?: string;
+    scopedUserId?: string;
+    message: string;
+    button?: { title: string; url: string };
+    quickReply?: { title: string; payload: string };
+    followGate?: boolean;
+    sessionStatus?: "awaiting_follow" | "delivered";
+    expiresAt?: string;
+  };
   attempts: number;
   ambiguous_attempts: number;
   created_at: Date;
@@ -58,7 +67,11 @@ async function claimJob(sql: Db, preferPublic: boolean): Promise<Job | undefined
     WITH candidate AS (
       SELECT id FROM jobs
       WHERE status IN ('queued', 'retry_wait', 'uncertain') AND next_attempt_at <= NOW()
-      ORDER BY CASE kind WHEN ${preferPublic ? "public_reply" : "private_reply"} THEN 0 ELSE 1 END,
+      ORDER BY CASE
+                 WHEN kind = 'direct_message' THEN 0
+                 WHEN kind = ${preferPublic ? "public_reply" : "private_reply"} THEN 1
+                 ELSE 2
+               END,
                next_attempt_at ASC, created_at ASC
       FOR UPDATE SKIP LOCKED LIMIT 1
     )
@@ -76,6 +89,7 @@ function millisecondsUntil(date: Date): number {
 }
 
 function jobExpired(job: Job): boolean {
+  if (job.payload.expiresAt) return Date.parse(job.payload.expiresAt) <= Date.now();
   return job.created_at.getTime() < Date.now() - 7 * 86_400_000;
 }
 
@@ -123,7 +137,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
     lastSurgeCheck = Date.now();
     const rows = await sql<{ pending: number }[]>`
       SELECT COUNT(*)::int AS pending FROM jobs
-      WHERE kind = 'private_reply' AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
+      WHERE kind IN ('private_reply', 'direct_message') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
     `;
     const pending = rows[0]?.pending ?? 0;
     if (!surgeMode && pending >= config.SURGE_ENTER_PRIVATE_JOBS) surgeMode = true;
@@ -135,7 +149,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
     igUserId: connection.ig_user_id!, token: box.open(connection.token_enc!), graphVersion: connection.graph_version,
   });
 
-  const markSent = async (job: Job, externalId: string, usagePercent?: number) => {
+  const markSent = async (job: Job, externalId: string, usagePercent?: number, recipientId?: string) => {
     await sql.begin(async (tx) => {
       await tx`
         UPDATE jobs SET status = 'sent', external_id = ${externalId}, last_error = NULL,
@@ -155,6 +169,21 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
           next_health_probe_at = NULL, updated_at = NOW()
         WHERE singleton = TRUE
       `;
+      if (job.kind === "private_reply" && job.payload.followGate) {
+        await tx`
+          UPDATE follow_gate_sessions SET scoped_user_id = COALESCE(${recipientId ?? null}, scoped_user_id),
+            status = 'awaiting_interaction', updated_at = NOW()
+          WHERE event_id = ${job.event_id}
+        `;
+      }
+      if (job.kind === "direct_message" && job.payload.sessionStatus) {
+        await tx`
+          UPDATE follow_gate_sessions SET status = ${job.payload.sessionStatus},
+            completed_at = ${job.payload.sessionStatus === "delivered" ? tx`NOW()` : null},
+            last_error = NULL, updated_at = NOW()
+          WHERE event_id = ${job.event_id}
+        `;
+      }
     });
     await finishEvent(sql, job.event_id);
   };
@@ -206,6 +235,12 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
             next_health_probe_at = CASE WHEN consecutive_api_failures + 1 >= 3 THEN NOW() + (${Math.min(300, delaySeconds)} * INTERVAL '1 second') ELSE next_health_probe_at END,
             updated_at = NOW()
           WHERE singleton = TRUE
+        `;
+      }
+      if (!shouldRetry && (job.kind === "direct_message" || job.payload.followGate)) {
+        await tx`
+          UPDATE follow_gate_sessions SET status = 'failed', last_error = ${message}, updated_at = NOW()
+          WHERE event_id = ${job.event_id}
         `;
       }
     });
@@ -275,7 +310,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
       // A failed reconciliation read may temporarily move the job to retry_wait, so the
       // durable counter is the source of truth rather than only previous_status.
       if (job.ambiguous_attempts > 0 && job.kind === "public_reply") {
-        const alreadyExists = await meta.hasPublicReply(context, job.payload.commentId, job.payload.message);
+        const alreadyExists = await meta.hasPublicReply(context, job.payload.commentId!, job.payload.message);
         if (alreadyExists) {
           await markSent(job, "reconciled-public-reply");
           return;
@@ -283,10 +318,12 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
       }
 
       const result = job.kind === "public_reply"
-        ? await meta.publicReply(context, job.payload.commentId, job.payload.message)
-        : await meta.privateReply(context, job.payload.commentId, job.payload.message, job.payload.button);
-      await markSent(job, result.externalId, result.usagePercent);
-      privateStreak = job.kind === "private_reply" ? privateStreak + 1 : 0;
+        ? await meta.publicReply(context, job.payload.commentId!, job.payload.message)
+        : job.kind === "private_reply"
+          ? await meta.privateReply(context, job.payload.commentId!, job.payload.message, job.payload.button, job.payload.quickReply)
+          : await meta.directMessage(context, job.payload.scopedUserId!, job.payload.message, job.payload.button, job.payload.quickReply);
+      await markSent(job, result.externalId, result.usagePercent, result.recipientId);
+      privateStreak = job.kind !== "public_reply" ? privateStreak + 1 : 0;
       nextDelay = (result.usagePercent ?? 0) >= 95
         ? 60_000
         : adaptiveIntervalMs(config.QUEUE_INTERVAL_MS, result.usagePercent ?? connection.last_meta_usage_percent);
@@ -356,16 +393,17 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
 
       const profile = await meta.profile(context);
       let fields = await meta.subscribedFields(context);
-      if (!fields.includes("comments")) {
-        await meta.subscribeToComments(context);
+      const requiredFields = ["comments", "messages", "messaging_postbacks"];
+      if (requiredFields.some((field) => !fields.includes(field))) {
+        await meta.subscribeToWebhooks(context);
         fields = await meta.subscribedFields(context);
       }
-      const subscribed = fields.includes("comments");
+      const subscribed = requiredFields.every((field) => fields.includes(field));
       await sql`
         UPDATE meta_connection SET username = ${profile.username ?? null}, subscription_healthy = ${subscribed},
           subscription_last_checked_at = NOW(), last_meta_response_at = NOW(),
           health_state = ${subscribed ? "healthy" : "permission_required"},
-          health_reason = ${subscribed ? null : "Webhook comments subscription could not be restored."},
+          health_reason = ${subscribed ? null : "Instagram messaging webhook subscriptions could not be restored."},
           health_since = NOW(), next_health_probe_at = NULL, consecutive_api_failures = 0, updated_at = NOW()
         WHERE singleton = TRUE
       `;

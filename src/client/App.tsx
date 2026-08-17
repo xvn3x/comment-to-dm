@@ -15,6 +15,10 @@ type Rule = {
   dm_text: string;
   button_text: string | null;
   button_url: string | null;
+  follow_gate_enabled: boolean;
+  follow_gate_prompt: string | null;
+  follow_gate_button_text: string | null;
+  follow_gate_retry_text: string | null;
 };
 
 type Dashboard = {
@@ -93,6 +97,10 @@ type RuleForm = {
   dmText: string;
   buttonText: string;
   buttonUrl: string;
+  followGateEnabled: boolean;
+  followGatePrompt: string;
+  followGateButtonText: string;
+  followGateRetryText: string;
 };
 
 const emptyRule: RuleForm = {
@@ -108,6 +116,10 @@ const emptyRule: RuleForm = {
   dmText: "Спасибо за комментарий! Нажмите кнопку ниже, чтобы получить материал.",
   buttonText: "Получить гайд",
   buttonUrl: "https://example.com/guide",
+  followGateEnabled: false,
+  followGatePrompt: "Нажмите «Проверить подписку», чтобы получить материал.",
+  followGateButtonText: "Проверить подписку",
+  followGateRetryText: "Пока не вижу подписку. Подпишитесь на аккаунт и нажмите «Проверить подписку» ещё раз.",
 };
 
 function statusLabel(status: string) {
@@ -264,6 +276,9 @@ export function App() {
       publicReplies: rule.publicReplyEnabled ? rule.publicReplies.split("\n").map((text) => text.trim()).filter(Boolean).slice(0, 10) : [],
       buttonText: rule.buttonText || null,
       buttonUrl: rule.buttonUrl || null,
+      followGatePrompt: rule.followGateEnabled ? rule.followGatePrompt : null,
+      followGateButtonText: rule.followGateEnabled ? rule.followGateButtonText : null,
+      followGateRetryText: rule.followGateEnabled ? rule.followGateRetryText : null,
     };
     try {
       await api(editingId ? `/api/rules/${editingId}` : "/api/rules", {
@@ -284,6 +299,9 @@ export function App() {
       mediaId: item.media_id ?? "", matchMode: item.match_mode, keywords: item.keywords.join(", "),
       publicReplyEnabled: item.public_reply_enabled, publicReplies: item.public_replies.join("\n"),
       dmText: item.dm_text, buttonText: item.button_text ?? "", buttonUrl: item.button_url ?? "",
+      followGateEnabled: item.follow_gate_enabled, followGatePrompt: item.follow_gate_prompt ?? emptyRule.followGatePrompt,
+      followGateButtonText: item.follow_gate_button_text ?? emptyRule.followGateButtonText,
+      followGateRetryText: item.follow_gate_retry_text ?? emptyRule.followGateRetryText,
     });
     setShowRule(true);
   }
@@ -411,7 +429,7 @@ export function App() {
           {!dashboard?.rules.length ? <div className="empty"><strong>Правил пока нет</strong><p>Создайте первое правило для слова «гайд».</p></div> : <div className="rule-list">
             {dashboard.rules.map((item) => <article className="rule-card" key={item.id}>
               <div className={`rule-icon ${item.active ? "active" : ""}`}>{item.active ? "ON" : "OFF"}</div>
-              <div className="rule-main"><div><strong>{item.name}</strong><span className="pill">{item.target_scope === "all" ? "Все Post/Reel" : item.media_id}</span></div><p>{item.match_mode === "any" ? "Любой комментарий" : `Ключи: ${item.keywords.join(", ")}`}</p><small>Direct: {item.dm_text}</small></div>
+              <div className="rule-main"><div><strong>{item.name}</strong><span className="pill">{item.target_scope === "all" ? "Все Post/Reel" : item.media_id}</span>{item.follow_gate_enabled && <span className="pill">Проверка подписки</span>}</div><p>{item.match_mode === "any" ? "Любой комментарий" : `Ключи: ${item.keywords.join(", ")}`}</p><small>{item.follow_gate_enabled ? "После подписки" : "Direct"}: {item.dm_text}</small></div>
               <div className="row-actions"><button className="ghost" onClick={() => editRule(item)}>Изменить</button><button className="ghost danger-text" onClick={() => void removeRule(item.id)}>Удалить</button></div>
             </article>)}
           </div>}
@@ -447,8 +465,14 @@ export function App() {
           {rule.matchMode !== "any" && <label>Ключевые слова <span>через запятую</span><input value={rule.keywords} onChange={(event) => setRule({ ...rule, keywords: event.target.value })} /></label>}
           <label className="check"><input type="checkbox" checked={rule.publicReplyEnabled} onChange={(event) => setRule({ ...rule, publicReplyEnabled: event.target.checked })} />Публично ответить под комментарием</label>
           {rule.publicReplyEnabled && <label>Варианты публичного ответа <span>каждый с новой строки, максимум 10</span><textarea rows={5} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}
-          <label>Сообщение в Direct<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>
-          <div className="two-cols"><label>Текст кнопки<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>HTTPS-ссылка<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div>
+          <label className="check"><input type="checkbox" checked={rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followGateEnabled: event.target.checked })} />Выдать материал только после проверки подписки</label>
+          {rule.followGateEnabled && <>
+            <label>Первое сообщение в Direct<textarea rows={3} value={rule.followGatePrompt} onChange={(event) => setRule({ ...rule, followGatePrompt: event.target.value })} /></label>
+            <label>Текст quick reply <span>до 20 символов</span><input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label>
+            <label>Если пользователь ещё не подписан<textarea rows={3} value={rule.followGateRetryText} onChange={(event) => setRule({ ...rule, followGateRetryText: event.target.value })} /></label>
+          </>}
+          <label>{rule.followGateEnabled ? "Сообщение после подтверждения подписки" : "Сообщение в Direct"}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>
+          <div className="two-cols"><label>Текст кнопки материала<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>HTTPS-ссылка на материал<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div>
           <label className="check"><input type="checkbox" checked={rule.active} onChange={(event) => setRule({ ...rule, active: event.target.checked })} />Правило активно</label>
           <div className="form-actions end"><button type="button" className="secondary" onClick={() => setShowRule(false)}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить правило"}</button></div>
         </form>

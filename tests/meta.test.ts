@@ -87,3 +87,48 @@ test("messaging profile exposes whether the user follows the business", async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+test("private replies can ask for profile consent with a quick reply", async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody: { recipient: { comment_id?: string }; message: { quick_replies?: Array<{ payload: string }> } } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    sentBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ message_id: "message-quick", recipient_id: "scoped-user" }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const result = await new MetaClient(config).privateReply(
+      context, "comment", "Нажмите кнопку", undefined,
+      { title: "Проверить", payload: "follow_gate:00000000-0000-4000-8000-000000000001" },
+    );
+    assert.equal(sentBody?.recipient.comment_id, "comment");
+    assert.equal(sentBody?.message.quick_replies?.[0]?.payload, "follow_gate:00000000-0000-4000-8000-000000000001");
+    assert.equal(result.recipientId, "scoped-user");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("follow gate result is sent to the scoped user in Direct", async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody: {
+    recipient: { id?: string };
+    message: { attachment?: { payload?: { buttons?: Array<{ url: string }> } } };
+  } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    sentBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ message_id: "message-final" }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    await new MetaClient(config).directMessage(
+      context, "scoped-user", "Ваш материал", { title: "Открыть", url: "https://example.com/guide" },
+    );
+    assert.equal(sentBody?.recipient.id, "scoped-user");
+    assert.equal(sentBody?.message.attachment?.payload?.buttons?.[0]?.url, "https://example.com/guide");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -12,6 +12,10 @@ export type RuleRecord = {
   dm_text: string;
   button_text: string | null;
   button_url: string | null;
+  follow_gate_enabled: boolean;
+  follow_gate_prompt: string | null;
+  follow_gate_button_text: string | null;
+  follow_gate_retry_text: string | null;
   created_at: Date;
   updated_at: Date;
 };

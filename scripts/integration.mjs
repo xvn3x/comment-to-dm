@@ -128,9 +128,59 @@ try {
   const delivered = await sql`SELECT kind, attempts FROM jobs ORDER BY kind`;
   assert.equal(delivered.length, 2);
   assert.ok(delivered.every((job) => job.attempts === 1), "Leader lease must prevent duplicate dispatch attempts");
+
+  const gateRule = await request("/api/rules", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({
+      name: "Follower gate", active: true, priority: 50, targetScope: "all", mediaId: null,
+      matchMode: "contains", keywords: ["проверка"], publicReplyEnabled: false, publicReplies: [],
+      dmText: "Ваш закрытый материал", buttonText: "Открыть", buttonUrl: "https://example.com/private",
+      followGateEnabled: true, followGatePrompt: "Сначала проверим подписку",
+      followGateButtonText: "Проверить", followGateRetryText: "Подпишитесь и попробуйте ещё раз",
+    }),
+  });
+  assert.equal(gateRule.response.status, 201);
+  const gateComment = await request("/api/mock/comment", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({ text: "проверка", mediaId: "demo-reel-1", username: "gate_user" }),
+  });
+  assert.equal(gateComment.body.result, "queued");
+  let gateSession;
+  const gateDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const rows = await sql`
+      SELECT s.*, e.id AS event_id FROM follow_gate_sessions s JOIN events e ON e.id = s.event_id
+      WHERE e.username = 'gate_user' ORDER BY e.created_at DESC LIMIT 1
+    `;
+    gateSession = rows[0];
+  } while (gateSession?.status !== "awaiting_interaction" && Date.now() < gateDeadline);
+  assert.equal(gateSession.status, "awaiting_interaction");
+  assert.equal(gateSession.scoped_user_id, "mock-user-demo_follower");
+
+  const quickReplyBody = JSON.stringify({ entry: [{ messaging: [{
+      sender: { id: "mock-user-demo_follower" }, timestamp: Date.now(),
+      message: { mid: "integration-quick-reply", quick_reply: { payload: `follow_gate:${gateSession.event_id}` } },
+    }] }] });
+  const [quickReply, duplicateQuickReply] = await Promise.all([
+    request("/webhooks/instagram", { method: "POST", body: quickReplyBody }),
+    request("/webhooks/instagram", { method: "POST", body: quickReplyBody }),
+  ]);
+  assert.equal(quickReply.response.status, 200);
+  assert.equal(duplicateQuickReply.response.status, 200);
+  let finalSession;
+  const finalDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    [finalSession] = await sql`SELECT * FROM follow_gate_sessions WHERE event_id = ${gateSession.event_id}`;
+  } while (finalSession?.status !== "delivered" && Date.now() < finalDeadline);
+  assert.equal(finalSession.status, "delivered");
+  const directJobs = await sql`SELECT status, attempts FROM jobs WHERE event_id = ${gateSession.event_id} AND kind = 'direct_message'`;
+  assert.equal(directJobs.length, 1);
+  assert.equal(directJobs[0].status, "sent");
   const ready = await request("/ready");
   assert.equal(ready.response.status, 200);
-  console.log("Integration flow passed: two workers → one leader → self-filter → public reply → private reply.");
+  console.log("Integration flow passed: queue reliability → quick reply → follower check → final Direct message.");
 } finally {
   await Promise.all(stopWorkers.map((stop) => stop()));
   await app.close();
