@@ -23,6 +23,12 @@ test("backs off transient failures and rejects permanent API errors", () => {
   });
 });
 
+test("retries delayed profile consent instead of losing a postback", () => {
+  const decision = retryDecision(new MetaApiError("profile consent is still propagating", 409, undefined, undefined, true), 1);
+  assert.equal(decision.action, "retry");
+  assert.equal(decision.retryable, true);
+});
+
 test("separates safe network retries from ambiguous writes", () => {
   assert.equal(retryDecision(new MetaTransportError("dns", false, "ENOTFOUND"), 1).action, "retry");
   assert.equal(retryDecision(new MetaTransportError("socket closed", true, "ECONNRESET"), 1).action, "uncertain");

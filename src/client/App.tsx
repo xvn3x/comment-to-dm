@@ -468,7 +468,7 @@ export function App() {
           <label className="check"><input type="checkbox" checked={rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followGateEnabled: event.target.checked })} />Выдать материал только после проверки подписки</label>
           {rule.followGateEnabled && <>
             <label>Первое сообщение в Direct<textarea rows={3} value={rule.followGatePrompt} onChange={(event) => setRule({ ...rule, followGatePrompt: event.target.value })} /></label>
-            <label>Текст quick reply <span>до 20 символов</span><input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label>
+            <label>Текст кнопки проверки <span>до 20 символов</span><input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label>
             <label>Если пользователь ещё не подписан<textarea rows={3} value={rule.followGateRetryText} onChange={(event) => setRule({ ...rule, followGateRetryText: event.target.value })} /></label>
           </>}
           <label>{rule.followGateEnabled ? "Сообщение после подтверждения подписки" : "Сообщение в Direct"}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>

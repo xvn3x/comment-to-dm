@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import type { Db } from "./db.js";
-import { MetaClient, type SendContext } from "./meta.js";
+import { MetaApiError, MetaClient, type SendContext } from "./meta.js";
 import { adaptiveIntervalMs, retryDecision, withJitter, type RetryDecision } from "./rate-control.js";
 import { SecretBox } from "./security.js";
 
 type Job = {
   id: string;
   event_id: string;
-  kind: "public_reply" | "private_reply" | "direct_message";
+  kind: "public_reply" | "private_reply" | "direct_message" | "follow_check";
   payload: {
     commentId?: string;
     scopedUserId?: string;
-    message: string;
+    message?: string;
     button?: { title: string; url: string };
     quickReply?: { title: string; payload: string };
     followGate?: boolean;
@@ -69,8 +69,9 @@ async function claimJob(sql: Db, preferPublic: boolean): Promise<Job | undefined
       WHERE status IN ('queued', 'retry_wait', 'uncertain') AND next_attempt_at <= NOW()
       ORDER BY CASE
                  WHEN kind = 'direct_message' THEN 0
-                 WHEN kind = ${preferPublic ? "public_reply" : "private_reply"} THEN 1
-                 ELSE 2
+                 WHEN kind = 'follow_check' THEN 1
+                 WHEN kind = ${preferPublic ? "public_reply" : "private_reply"} THEN 2
+                 ELSE 3
                END,
                next_attempt_at ASC, created_at ASC
       FOR UPDATE SKIP LOCKED LIMIT 1
@@ -137,7 +138,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
     lastSurgeCheck = Date.now();
     const rows = await sql<{ pending: number }[]>`
       SELECT COUNT(*)::int AS pending FROM jobs
-      WHERE kind IN ('private_reply', 'direct_message') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
+      WHERE kind IN ('private_reply', 'direct_message', 'follow_check') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
     `;
     const pending = rows[0]?.pending ?? 0;
     if (!surgeMode && pending >= config.SURGE_ENTER_PRIVATE_JOBS) surgeMode = true;
@@ -188,8 +189,72 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
     await finishEvent(sql, job.event_id);
   };
 
+  const completeFollowCheck = async (job: Job, followed: boolean, usagePercent?: number) => {
+    await sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${job.event_id}, 2))`;
+      const sessions = await tx<{
+        final_message: string; final_button_text: string | null; final_button_url: string | null;
+        check_button_text: string; retry_message: string; status: string;
+      }[]>`
+        SELECT final_message, final_button_text, final_button_url, check_button_text, retry_message, status
+        FROM follow_gate_sessions WHERE event_id = ${job.event_id} FOR UPDATE
+      `;
+      const session = sessions[0];
+      if (!session || session.status === "delivered") {
+        await tx`
+          UPDATE jobs SET status = 'skipped', external_id = 'follow-session-closed',
+            dispatch_started_at = NULL, updated_at = NOW() WHERE id = ${job.id}
+        `;
+        return;
+      }
+      const directPayload = followed ? {
+        scopedUserId: job.payload.scopedUserId,
+        message: session.final_message,
+        button: session.final_button_text && session.final_button_url
+          ? { title: session.final_button_text, url: session.final_button_url } : undefined,
+        sessionStatus: "delivered",
+        expiresAt: job.payload.expiresAt,
+      } : {
+        scopedUserId: job.payload.scopedUserId,
+        message: session.retry_message,
+        quickReply: { title: session.check_button_text, payload: `follow_gate:${job.event_id}` },
+        sessionStatus: "awaiting_follow",
+        expiresAt: job.payload.expiresAt,
+      };
+      await tx`
+        INSERT INTO jobs (id, event_id, kind, interaction_id, payload)
+        VALUES (
+          ${randomUUID()}, ${job.event_id}, 'direct_message', ${`follow-response:${job.id}`},
+          ${tx.json(directPayload)}
+        ) ON CONFLICT DO NOTHING
+      `;
+      await tx`
+        UPDATE jobs SET status = 'sent', external_id = ${followed ? "follow:true" : "follow:false"},
+          last_error = NULL, last_error_code = NULL, last_error_action = NULL,
+          dispatch_started_at = NULL, updated_at = NOW() WHERE id = ${job.id}
+      `;
+      await tx`
+        UPDATE follow_gate_sessions SET last_checked_at = NOW(),
+          status = ${followed ? "awaiting_interaction" : "awaiting_follow"},
+          last_error = NULL, updated_at = NOW() WHERE event_id = ${job.event_id}
+      `;
+      await tx`
+        UPDATE meta_connection SET last_meta_usage_percent = ${usagePercent ?? 0},
+          last_meta_response_at = NOW(), consecutive_api_failures = 0,
+          consecutive_rate_limits = GREATEST(consecutive_rate_limits - 1, 0),
+          health_state = CASE WHEN health_state IN ('degraded', 'rate_limited', 'restricted') THEN 'healthy' ELSE health_state END,
+          health_reason = CASE WHEN health_state IN ('degraded', 'rate_limited', 'restricted') THEN NULL ELSE health_reason END,
+          health_since = CASE WHEN health_state IN ('degraded', 'rate_limited', 'restricted') THEN NOW() ELSE health_since END,
+          next_health_probe_at = NULL, updated_at = NOW() WHERE singleton = TRUE
+      `;
+    });
+    await finishEvent(sql, job.event_id);
+  };
+
   const handleJobError = async (job: Job, error: unknown, connection: Connection): Promise<number> => {
     const decision = retryDecision(error, job.attempts, connection.consecutive_rate_limits);
+    const isolatedProfileConsent = job.kind === "follow_check"
+      && error instanceof MetaApiError && error.status === 409;
     const delaySeconds = withJitter(decision.delaySeconds);
     const message = error instanceof Error ? error.message.slice(0, 1000) : "Unknown delivery error";
 
@@ -226,7 +291,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
             consecutive_api_failures = consecutive_api_failures + 1, updated_at = NOW()
           WHERE singleton = TRUE
         `;
-      } else if (decision.action === "retry" || decision.action === "uncertain") {
+      } else if (!isolatedProfileConsent && (decision.action === "retry" || decision.action === "uncertain")) {
         await tx`
           UPDATE meta_connection SET consecutive_api_failures = consecutive_api_failures + 1,
             health_state = CASE WHEN consecutive_api_failures + 1 >= 3 THEN 'degraded' ELSE health_state END,
@@ -237,7 +302,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
           WHERE singleton = TRUE
         `;
       }
-      if (!shouldRetry && (job.kind === "direct_message" || job.payload.followGate)) {
+      if (!shouldRetry && (job.kind === "direct_message" || job.kind === "follow_check" || job.payload.followGate)) {
         await tx`
           UPDATE follow_gate_sessions SET status = 'failed', last_error = ${message}, updated_at = NOW()
           WHERE event_id = ${job.event_id}
@@ -287,6 +352,12 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
       if (jobExpired(job)) {
         await sql`UPDATE jobs SET status = 'expired', last_error = 'Delivery eligibility window expired.',
           last_error_action = 'permanent', dispatch_started_at = NULL, updated_at = NOW() WHERE id = ${job.id}`;
+        if (job.kind === "direct_message" || job.kind === "follow_check" || job.payload.followGate) {
+          await sql`
+            UPDATE follow_gate_sessions SET status = 'failed', last_error = 'Messaging response window expired.',
+              updated_at = NOW() WHERE event_id = ${job.event_id}
+          `;
+        }
         await finishEvent(sql, job.event_id);
         return;
       }
@@ -310,18 +381,25 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
       // A failed reconciliation read may temporarily move the job to retry_wait, so the
       // durable counter is the source of truth rather than only previous_status.
       if (job.ambiguous_attempts > 0 && job.kind === "public_reply") {
-        const alreadyExists = await meta.hasPublicReply(context, job.payload.commentId!, job.payload.message);
+        const alreadyExists = await meta.hasPublicReply(context, job.payload.commentId!, job.payload.message!);
         if (alreadyExists) {
           await markSent(job, "reconciled-public-reply");
           return;
         }
       }
 
+      if (job.kind === "follow_check") {
+        const follow = await meta.userFollowStatus(context, job.payload.scopedUserId!);
+        await completeFollowCheck(job, follow.isUserFollowBusiness, follow.usagePercent);
+        privateStreak += 1;
+        nextDelay = adaptiveIntervalMs(config.QUEUE_INTERVAL_MS, follow.usagePercent ?? connection.last_meta_usage_percent);
+        return;
+      }
       const result = job.kind === "public_reply"
-        ? await meta.publicReply(context, job.payload.commentId!, job.payload.message)
+        ? await meta.publicReply(context, job.payload.commentId!, job.payload.message!)
         : job.kind === "private_reply"
-          ? await meta.privateReply(context, job.payload.commentId!, job.payload.message, job.payload.button, job.payload.quickReply)
-          : await meta.directMessage(context, job.payload.scopedUserId!, job.payload.message, job.payload.button, job.payload.quickReply);
+          ? await meta.privateReply(context, job.payload.commentId!, job.payload.message!, job.payload.button, job.payload.quickReply)
+          : await meta.directMessage(context, job.payload.scopedUserId!, job.payload.message!, job.payload.button, job.payload.quickReply);
       await markSent(job, result.externalId, result.usagePercent, result.recipientId);
       privateStreak = job.kind !== "public_reply" ? privateStreak + 1 : 0;
       nextDelay = (result.usagePercent ?? 0) >= 95
@@ -424,9 +502,13 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
 
   const recoverStaleJobs = async () => {
     await sql`
-      UPDATE jobs SET status = 'uncertain', ambiguous_attempts = ambiguous_attempts + 1,
-        next_attempt_at = NOW() + INTERVAL '5 minutes', last_error = 'Worker stopped during delivery; result requires reconciliation.',
-        last_error_code = 'worker_interrupted', last_error_action = 'uncertain', dispatch_started_at = NULL, updated_at = NOW()
+      UPDATE jobs SET status = CASE WHEN kind = 'follow_check' THEN 'retry_wait' ELSE 'uncertain' END,
+        ambiguous_attempts = ambiguous_attempts + CASE WHEN kind = 'follow_check' THEN 0 ELSE 1 END,
+        next_attempt_at = NOW() + CASE WHEN kind = 'follow_check' THEN INTERVAL '5 seconds' ELSE INTERVAL '5 minutes' END,
+        last_error = 'Worker stopped during delivery; result requires recovery.',
+        last_error_code = 'worker_interrupted',
+        last_error_action = CASE WHEN kind = 'follow_check' THEN 'retry' ELSE 'uncertain' END,
+        dispatch_started_at = NULL, updated_at = NOW()
       WHERE status = 'processing' AND dispatch_started_at < NOW() - (${config.PROCESSING_TIMEOUT_SECONDS} * INTERVAL '1 second')
     `;
   };
@@ -434,9 +516,13 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
   void acquireLease().then(async (leader) => {
     if (!leader) return tick();
     await sql`
-      UPDATE jobs SET status = 'uncertain', ambiguous_attempts = ambiguous_attempts + 1,
-        next_attempt_at = NOW() + INTERVAL '5 minutes', last_error = 'Worker restarted during delivery; result requires reconciliation.',
-        last_error_code = 'worker_restarted', last_error_action = 'uncertain', dispatch_started_at = NULL, updated_at = NOW()
+      UPDATE jobs SET status = CASE WHEN kind = 'follow_check' THEN 'retry_wait' ELSE 'uncertain' END,
+        ambiguous_attempts = ambiguous_attempts + CASE WHEN kind = 'follow_check' THEN 0 ELSE 1 END,
+        next_attempt_at = NOW() + CASE WHEN kind = 'follow_check' THEN INTERVAL '5 seconds' ELSE INTERVAL '5 minutes' END,
+        last_error = 'Worker restarted during delivery; result requires recovery.',
+        last_error_code = 'worker_restarted',
+        last_error_action = CASE WHEN kind = 'follow_check' THEN 'retry' ELSE 'uncertain' END,
+        dispatch_started_at = NULL, updated_at = NOW()
       WHERE status = 'processing'
     `;
     void maintainConnection().catch(() => undefined);

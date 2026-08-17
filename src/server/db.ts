@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS events_dedupe_idx ON events (sender_id, media_id, rul
 CREATE TABLE IF NOT EXISTS jobs (
   id UUID PRIMARY KEY,
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply', 'direct_message')),
+  kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply', 'direct_message', 'follow_check')),
   interaction_id TEXT UNIQUE,
   payload JSONB NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'retry_wait', 'uncertain', 'sent', 'failed', 'dead_letter', 'expired', 'skipped')),
@@ -215,6 +215,14 @@ const migrations = [
         CHECK ((final_button_text IS NULL AND final_button_url IS NULL) OR
                (final_button_text IS NOT NULL AND final_button_url IS NOT NULL))
       );
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
+      ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
+        CHECK (kind IN ('public_reply', 'private_reply', 'direct_message', 'follow_check'));
     `,
   },
 ];

@@ -88,9 +88,12 @@ test("messaging profile exposes whether the user follows the business", async ()
   }
 });
 
-test("private replies can ask for profile consent with a quick reply", async () => {
+test("private replies can ask for profile consent with an inline postback button", async () => {
   const originalFetch = globalThis.fetch;
-  let sentBody: { recipient: { comment_id?: string }; message: { quick_replies?: Array<{ payload: string }> } } | undefined;
+  let sentBody: {
+    recipient: { comment_id?: string };
+    message: { attachment?: { payload?: { buttons?: Array<{ type: string; payload: string }> } } };
+  } | undefined;
   globalThis.fetch = async (_input, init) => {
     sentBody = JSON.parse(String(init?.body));
     return new Response(JSON.stringify({ message_id: "message-quick", recipient_id: "scoped-user" }), {
@@ -103,7 +106,8 @@ test("private replies can ask for profile consent with a quick reply", async () 
       { title: "Проверить", payload: "follow_gate:00000000-0000-4000-8000-000000000001" },
     );
     assert.equal(sentBody?.recipient.comment_id, "comment");
-    assert.equal(sentBody?.message.quick_replies?.[0]?.payload, "follow_gate:00000000-0000-4000-8000-000000000001");
+    assert.equal(sentBody?.message.attachment?.payload?.buttons?.[0]?.type, "postback");
+    assert.equal(sentBody?.message.attachment?.payload?.buttons?.[0]?.payload, "follow_gate:00000000-0000-4000-8000-000000000001");
     assert.equal(result.recipientId, "scoped-user");
   } finally {
     globalThis.fetch = originalFetch;
@@ -128,6 +132,32 @@ test("follow gate result is sent to the scoped user in Direct", async () => {
     );
     assert.equal(sentBody?.recipient.id, "scoped-user");
     assert.equal(sentBody?.message.attachment?.payload?.buttons?.[0]?.url, "https://example.com/guide");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("follower retry uses an inline postback button", async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody: {
+    recipient: { id?: string };
+    message: { attachment?: { payload?: { buttons?: Array<{ type: string; title: string; payload: string }> } } };
+  } | undefined;
+  globalThis.fetch = async (_input, init) => {
+    sentBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ message_id: "message-retry" }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    await new MetaClient(config).directMessage(
+      context, "scoped-user", "Подпишитесь и проверьте снова", undefined,
+      { title: "Готово", payload: "follow_gate:00000000-0000-4000-8000-000000000001" },
+    );
+    const action = sentBody?.message.attachment?.payload?.buttons?.[0];
+    assert.deepEqual(action, {
+      type: "postback", title: "Готово", payload: "follow_gate:00000000-0000-4000-8000-000000000001",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

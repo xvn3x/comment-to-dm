@@ -219,9 +219,15 @@ export class MetaClient {
     username?: string;
     isUserFollowBusiness: boolean;
     isBusinessFollowUser?: boolean;
+    usagePercent?: number;
   }> {
     if (this.config.META_MODE === "mock") {
-      return { username: "demo_follower", isUserFollowBusiness: true, isBusinessFollowUser: false };
+      return {
+        username: "demo_follower",
+        isUserFollowBusiness: !scopedUserId.includes("not_follower"),
+        isBusinessFollowUser: false,
+        usagePercent: undefined,
+      };
     }
     const url = new URL(`https://graph.instagram.com/${context.graphVersion}/${scopedUserId}`);
     url.searchParams.set("fields", "username,is_user_follow_business,is_business_follow_user");
@@ -230,12 +236,16 @@ export class MetaClient {
       throw new MetaApiError(
         "Meta did not return follower status. The Instagram user may not have granted messaging profile consent.",
         409,
+        undefined,
+        undefined,
+        true,
       );
     }
     return {
       username: body.username ? String(body.username) : undefined,
       isUserFollowBusiness: body.is_user_follow_business,
       isBusinessFollowUser: typeof body.is_business_follow_user === "boolean" ? body.is_business_follow_user : undefined,
+      usagePercent: positiveNumber(body.__usagePercent),
     };
   }
 
@@ -334,14 +344,17 @@ export class MetaClient {
     if (this.config.META_MODE === "mock") return {
       externalId: `mock-private-${Date.now()}`, usagePercent: undefined, recipientId: "mock-user-demo_follower",
     };
-    const body = button
-      ? { recipient: { comment_id: commentId }, message: { attachment: { type: "template", payload: {
+    const messageBody = button
+      ? { attachment: { type: "template", payload: {
           template_type: "button", text: message, buttons: [{ type: "web_url", title: button.title, url: button.url }],
-        } } } }
-      : { recipient: { comment_id: commentId }, message: {
-          text: message,
-          ...(quickReply ? { quick_replies: [{ content_type: "text", title: quickReply.title, payload: quickReply.payload }] } : {}),
-        } };
+        } } }
+      : quickReply
+        ? { attachment: { type: "template", payload: {
+            template_type: "button", text: message,
+            buttons: [{ type: "postback", title: quickReply.title, payload: quickReply.payload }],
+          } } }
+        : { text: message };
+    const body = { recipient: { comment_id: commentId }, message: messageBody };
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/messages`;
     const result = await this.request(url, {
       method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
@@ -358,14 +371,17 @@ export class MetaClient {
     quickReply?: { title: string; payload: string },
   ) {
     if (this.config.META_MODE === "mock") return { externalId: `mock-direct-${Date.now()}`, usagePercent: undefined, recipientId: undefined };
-    const body = button
-      ? { recipient: { id: scopedUserId }, message: { attachment: { type: "template", payload: {
+    const messageBody = button
+      ? { attachment: { type: "template", payload: {
           template_type: "button", text: message, buttons: [{ type: "web_url", title: button.title, url: button.url }],
-        } } } }
-      : { recipient: { id: scopedUserId }, message: {
-          text: message,
-          ...(quickReply ? { quick_replies: [{ content_type: "text", title: quickReply.title, payload: quickReply.payload }] } : {}),
-        } };
+        } } }
+      : quickReply
+        ? { attachment: { type: "template", payload: {
+            template_type: "button", text: message,
+            buttons: [{ type: "postback", title: quickReply.title, payload: quickReply.payload }],
+          } } }
+        : { text: message };
+    const body = { recipient: { id: scopedUserId }, message: messageBody };
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/messages`;
     const result = await this.request(url, {
       method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },

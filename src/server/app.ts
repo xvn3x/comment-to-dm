@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, { LogController, type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -90,16 +90,41 @@ function toRuleValues(value: z.infer<typeof ruleSchema>) {
 }
 
 export async function buildApp(sql: Db, config: AppConfig) {
-  const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 1_048_576 });
+  const app = Fastify({
+    logger: true,
+    logController: new LogController({ disableRequestLogging: true }),
+    trustProxy: true,
+    bodyLimit: 1_048_576,
+  });
   const box = new SecretBox(config.ENCRYPTION_KEY);
   const meta = new MetaClient(config);
   const passwordHash = hashPassword(config.ADMIN_PASSWORD, Buffer.from(config.SESSION_SECRET.slice(0, 16)));
   const cookieName = "commentdm_session";
 
   await app.register(cookie);
-  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'self'"],
+      },
+    },
+  });
   await app.register(rateLimit, { global: false });
   await app.register(rawBody, { field: "rawBody", global: false, encoding: false, runFirst: true });
+  app.addHook("onRequest", async (request) => {
+    request.log.info({ method: request.method, path: request.url.split("?", 1)[0] }, "incoming request");
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    request.log.info({ statusCode: reply.statusCode, responseTime: reply.elapsedTime }, "request completed");
+  });
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
     done(null, Object.fromEntries(new URLSearchParams(typeof body === "string" ? body : body.toString("utf8"))));
   });
@@ -193,7 +218,7 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const queue = await sql`
       SELECT
         COUNT(*) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS pending,
-        COUNT(*) FILTER (WHERE kind = 'private_reply' AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS private_pending,
+        COUNT(*) FILTER (WHERE kind IN ('private_reply', 'direct_message', 'follow_check') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS private_pending,
         COUNT(*) FILTER (WHERE kind = 'public_reply' AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS public_pending,
         COUNT(*) FILTER (WHERE status = 'retry_wait')::int AS retrying,
         COUNT(*) FILTER (WHERE status = 'uncertain')::int AS uncertain,
@@ -536,54 +561,45 @@ export async function buildApp(sql: Db, config: AppConfig) {
     for (const action of messagingActions) {
       const eventId = action.payload.slice("follow_gate:".length);
       if (!z.string().uuid().safeParse(eventId).success) continue;
-      const sessions = await sql<{
-        event_id: string; scoped_user_id: string | null; status: string; final_message: string;
-        final_button_text: string | null; final_button_url: string | null;
-        check_button_text: string; retry_message: string;
-      }[]>`
-        SELECT * FROM follow_gate_sessions WHERE event_id = ${eventId}
-      `;
-      const session = sessions[0];
-      if (!session || session.status === "delivered") continue;
-      if (session.scoped_user_id && session.scoped_user_id !== action.senderId) {
-        request.log.warn({ eventId, senderId: action.senderId }, "Ignored follow gate action from another user");
-        continue;
-      }
-      const connections = await sql<{ ig_user_id: string | null; token_enc: string | null; graph_version: string }[]>`
-        SELECT ig_user_id, token_enc, graph_version FROM meta_connection WHERE singleton = TRUE
-      `;
-      const connection = connections[0];
-      if (!connection?.ig_user_id || !connection.token_enc) return reply.code(503).send({ error: "instagram_not_connected" });
-      const follow = await meta.userFollowStatus({
-        igUserId: connection.ig_user_id,
-        token: box.open(connection.token_enc),
-        graphVersion: connection.graph_version,
-      }, action.senderId);
-      const followed = follow.isUserFollowBusiness;
-      const jobPayload = followed ? {
-        scopedUserId: action.senderId,
-        message: session.final_message,
-        button: session.final_button_text && session.final_button_url
-          ? { title: session.final_button_text, url: session.final_button_url } : undefined,
-        sessionStatus: "delivered",
-        expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
-      } : {
-        scopedUserId: action.senderId,
-        message: session.retry_message,
-        quickReply: { title: session.check_button_text, payload: `follow_gate:${eventId}` },
-        sessionStatus: "awaiting_follow",
-        expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
-      };
       await sql.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${eventId}, 2))`;
+        const sessions = await tx<{
+          event_id: string; scoped_user_id: string | null; status: string; sender_id: string;
+        }[]>`
+          SELECT s.event_id, s.scoped_user_id, s.status, e.sender_id
+          FROM follow_gate_sessions s JOIN events e ON e.id = s.event_id
+          WHERE s.event_id = ${eventId} FOR UPDATE OF s
+        `;
+        const session = sessions[0];
+        if (!session || session.status === "delivered") return;
+        const expectedSender = session.scoped_user_id ?? session.sender_id;
+        if (expectedSender !== action.senderId) {
+          request.log.warn({ eventId }, "Ignored follow gate action from another user");
+          return;
+        }
+        const active = await tx<{ present: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM jobs WHERE event_id = ${eventId}
+              AND kind IN ('follow_check', 'direct_message')
+              AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
+          ) AS present
+        `;
+        if (active[0]?.present) return;
         const inserted = await tx`
           INSERT INTO jobs (id, event_id, kind, interaction_id, payload)
-          VALUES (${randomUUID()}, ${eventId}, 'direct_message', ${action.interactionId}, ${tx.json(jobPayload)})
+          VALUES (
+            ${randomUUID()}, ${eventId}, 'follow_check', ${action.interactionId},
+            ${tx.json({
+              scopedUserId: action.senderId,
+              expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
+            })}
+          )
           ON CONFLICT DO NOTHING RETURNING id
         `;
         if (!inserted.length) return;
         await tx`
-          UPDATE follow_gate_sessions SET scoped_user_id = ${action.senderId}, last_checked_at = NOW(),
-            status = ${followed ? "awaiting_interaction" : "awaiting_follow"}, last_error = NULL, updated_at = NOW()
+          UPDATE follow_gate_sessions SET scoped_user_id = COALESCE(scoped_user_id, ${action.senderId}),
+            last_error = NULL, updated_at = NOW()
           WHERE event_id = ${eventId}
         `;
         await tx`UPDATE events SET status = 'queued', processed_at = NULL, error_message = NULL WHERE id = ${eventId}`;

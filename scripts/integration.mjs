@@ -48,6 +48,11 @@ async function request(path, init = {}) {
 }
 
 try {
+  const privacy = await fetch(`${base}/privacy`);
+  assert.equal(privacy.status, 200);
+  assert.match(privacy.headers.get("content-security-policy") || "", /default-src 'self'/);
+  assert.match(privacy.headers.get("content-security-policy") || "", /object-src 'none'/);
+
   const login = await request("/api/login", {
     method: "POST",
     body: JSON.stringify({ password: config.ADMIN_PASSWORD }),
@@ -158,16 +163,29 @@ try {
   assert.equal(gateSession.status, "awaiting_interaction");
   assert.equal(gateSession.scoped_user_id, "mock-user-demo_follower");
 
-  const quickReplyBody = JSON.stringify({ entry: [{ messaging: [{
+  const rejectedSender = await request("/webhooks/instagram", {
+    method: "POST",
+    body: JSON.stringify({ entry: [{ messaging: [{
+      sender: { id: "another-user" }, timestamp: Date.now(),
+      postback: { mid: "wrong-user-postback", payload: `follow_gate:${gateSession.event_id}` },
+    }] }] }),
+  });
+  assert.equal(rejectedSender.response.status, 200);
+  const rejectedJobs = await sql`SELECT id FROM jobs WHERE event_id = ${gateSession.event_id} AND kind = 'follow_check'`;
+  assert.equal(rejectedJobs.length, 0, "Another user must not be able to trigger a follower gate");
+
+  const postbackBodies = ["integration-postback-1", "integration-postback-2"].map((mid) => JSON.stringify({
+    entry: [{ messaging: [{
       sender: { id: "mock-user-demo_follower" }, timestamp: Date.now(),
-      message: { mid: "integration-quick-reply", quick_reply: { payload: `follow_gate:${gateSession.event_id}` } },
-    }] }] });
-  const [quickReply, duplicateQuickReply] = await Promise.all([
-    request("/webhooks/instagram", { method: "POST", body: quickReplyBody }),
-    request("/webhooks/instagram", { method: "POST", body: quickReplyBody }),
+      postback: { mid, title: "Проверить", payload: `follow_gate:${gateSession.event_id}` },
+    }] }],
+  }));
+  const [postback, duplicatePostback] = await Promise.all([
+    request("/webhooks/instagram", { method: "POST", body: postbackBodies[0] }),
+    request("/webhooks/instagram", { method: "POST", body: postbackBodies[1] }),
   ]);
-  assert.equal(quickReply.response.status, 200);
-  assert.equal(duplicateQuickReply.response.status, 200);
+  assert.equal(postback.response.status, 200);
+  assert.equal(duplicatePostback.response.status, 200);
   let finalSession;
   const finalDeadline = Date.now() + 10_000;
   do {
@@ -178,9 +196,51 @@ try {
   const directJobs = await sql`SELECT status, attempts FROM jobs WHERE event_id = ${gateSession.event_id} AND kind = 'direct_message'`;
   assert.equal(directJobs.length, 1);
   assert.equal(directJobs[0].status, "sent");
+  const followJobs = await sql`SELECT status, attempts FROM jobs WHERE event_id = ${gateSession.event_id} AND kind = 'follow_check'`;
+  assert.equal(followJobs.length, 1, "Concurrent postbacks must collapse into one follower check");
+  assert.equal(followJobs[0].status, "sent");
+
+  const notFollowingComment = await request("/api/mock/comment", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({ text: "проверка", mediaId: "demo-reel-1", username: "not_follower" }),
+  });
+  assert.equal(notFollowingComment.body.result, "queued");
+  let notFollowingSession;
+  const retryDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const rows = await sql`
+      SELECT s.*, e.id AS event_id FROM follow_gate_sessions s JOIN events e ON e.id = s.event_id
+      WHERE e.username = 'not_follower' ORDER BY e.created_at DESC LIMIT 1
+    `;
+    notFollowingSession = rows[0];
+  } while (notFollowingSession?.status !== "awaiting_interaction" && Date.now() < retryDeadline);
+  assert.equal(notFollowingSession.status, "awaiting_interaction");
+  await sql`UPDATE follow_gate_sessions SET scoped_user_id = 'mock-user-not_follower' WHERE event_id = ${notFollowingSession.event_id}`;
+  const retryPostback = await request("/webhooks/instagram", {
+    method: "POST",
+    body: JSON.stringify({ entry: [{ messaging: [{
+      sender: { id: "mock-user-not_follower" }, timestamp: Date.now(),
+      postback: { mid: "not-following-postback", title: "Проверить", payload: `follow_gate:${notFollowingSession.event_id}` },
+    }] }] }),
+  });
+  assert.equal(retryPostback.response.status, 200);
+  let retryJob;
+  const retryDeliveryDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    [retryJob] = await sql`
+      SELECT status, payload FROM jobs
+      WHERE event_id = ${notFollowingSession.event_id} AND kind = 'direct_message'
+      ORDER BY created_at DESC LIMIT 1
+    `;
+  } while (retryJob?.status !== "sent" && Date.now() < retryDeliveryDeadline);
+  assert.equal(retryJob.status, "sent");
+  assert.equal(retryJob.payload.sessionStatus, "awaiting_follow");
+  assert.equal(retryJob.payload.quickReply.title, "Проверить");
   const ready = await request("/ready");
   assert.equal(ready.response.status, 200);
-  console.log("Integration flow passed: queue reliability → quick reply → follower check → final Direct message.");
+  console.log("Integration flow passed: inline postback → durable follower check → final Direct message without duplicates.");
 } finally {
   await Promise.all(stopWorkers.map((stop) => stop()));
   await app.close();
