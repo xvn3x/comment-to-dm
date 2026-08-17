@@ -8,7 +8,7 @@ import { SecretBox } from "./security.js";
 type Job = {
   id: string;
   event_id: string;
-  kind: "public_reply" | "private_reply" | "direct_message" | "follow_check";
+  kind: "public_reply" | "private_reply" | "direct_message" | "follow_check" | "follow_up";
   payload: {
     commentId?: string;
     scopedUserId?: string;
@@ -16,6 +16,7 @@ type Job = {
     button?: { title: string; url: string };
     quickReply?: { title: string; payload: string };
     followGate?: boolean;
+    scheduleFollowUp?: boolean;
     sessionStatus?: "awaiting_follow" | "delivered";
     expiresAt?: string;
   };
@@ -49,11 +50,13 @@ async function finishEvent(sql: Db, eventId: string): Promise<void> {
   const pending = await sql<{ count: number }[]>`
     SELECT COUNT(*)::int AS count FROM jobs
     WHERE event_id = ${eventId} AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
+      AND affects_event_status = TRUE
   `;
   if (pending[0]?.count) return;
   const failures = await sql<{ count: number; error: string | null }[]>`
     SELECT COUNT(*)::int AS count, MAX(last_error) AS error FROM jobs
     WHERE event_id = ${eventId} AND status IN ('failed', 'dead_letter', 'expired')
+      AND affects_event_status = TRUE
   `;
   await sql`
     UPDATE events SET status = ${failures[0]?.count ? "failed" : "sent"},
@@ -138,7 +141,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
     lastSurgeCheck = Date.now();
     const rows = await sql<{ pending: number }[]>`
       SELECT COUNT(*)::int AS pending FROM jobs
-      WHERE kind IN ('private_reply', 'direct_message', 'follow_check') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
+      WHERE kind IN ('private_reply', 'direct_message', 'follow_check', 'follow_up') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain')
     `;
     const pending = rows[0]?.pending ?? 0;
     if (!surgeMode && pending >= config.SURGE_ENTER_PRIVATE_JOBS) surgeMode = true;
@@ -185,6 +188,44 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
           WHERE event_id = ${job.event_id}
         `;
       }
+      if (job.kind === "follow_up") {
+        await tx`
+          UPDATE follow_up_sessions SET status = 'sent', sent_at = NOW(), last_error = NULL, updated_at = NOW()
+          WHERE event_id = ${job.event_id}
+        `;
+      }
+      if (job.payload.scheduleFollowUp) {
+        const sessions = await tx<{
+          scoped_user_id: string | null; material_button_text: string; follow_up_text: string;
+          tracking_token: string; delay_minutes: number; status: string; clicked_at: Date | null;
+        }[]>`
+          SELECT scoped_user_id, material_button_text, follow_up_text, tracking_token,
+            delay_minutes, status, clicked_at
+          FROM follow_up_sessions WHERE event_id = ${job.event_id} FOR UPDATE
+        `;
+        const session = sessions[0];
+        const scopedUserId = session?.scoped_user_id ?? job.payload.scopedUserId ?? recipientId;
+        if (session && scopedUserId && session.status === "awaiting_window" && !session.clicked_at) {
+          const followUpUrl = new URL(`/r/${session.tracking_token}`, config.PUBLIC_BASE_URL).toString();
+          await tx`
+            INSERT INTO jobs (id, event_id, kind, interaction_id, payload, affects_event_status, next_attempt_at)
+            VALUES (
+              ${randomUUID()}, ${job.event_id}, 'follow_up', ${`follow-up:${job.event_id}`},
+              ${tx.json({
+                scopedUserId,
+                message: session.follow_up_text,
+                button: { title: session.material_button_text, url: followUpUrl },
+                expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
+              })}, FALSE, NOW() + (${session.delay_minutes} * INTERVAL '1 minute')
+            ) ON CONFLICT DO NOTHING
+          `;
+          await tx`
+            UPDATE follow_up_sessions SET scoped_user_id = ${scopedUserId}, status = 'scheduled',
+              scheduled_at = NOW(), last_error = NULL, updated_at = NOW()
+            WHERE event_id = ${job.event_id}
+          `;
+        }
+      }
     });
     await finishEvent(sql, job.event_id);
   };
@@ -213,6 +254,7 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
         button: session.final_button_text && session.final_button_url
           ? { title: session.final_button_text, url: session.final_button_url } : undefined,
         sessionStatus: "delivered",
+        scheduleFollowUp: true,
         expiresAt: job.payload.expiresAt,
       } : {
         scopedUserId: job.payload.scopedUserId,
@@ -308,6 +350,12 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
           WHERE event_id = ${job.event_id}
         `;
       }
+      if (!shouldRetry && job.kind === "follow_up") {
+        await tx`
+          UPDATE follow_up_sessions SET status = 'failed', last_error = ${message}, updated_at = NOW()
+          WHERE event_id = ${job.event_id}
+        `;
+      }
     });
     if (!shouldRetry) await finishEvent(sql, job.event_id);
     return globalState || decision.action === "uncertain" ? Math.min(60_000, delaySeconds * 1000) : config.QUEUE_INTERVAL_MS;
@@ -358,6 +406,12 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
               updated_at = NOW() WHERE event_id = ${job.event_id}
           `;
         }
+        if (job.kind === "follow_up") {
+          await sql`
+            UPDATE follow_up_sessions SET status = 'failed', last_error = 'Messaging response window expired.',
+              updated_at = NOW() WHERE event_id = ${job.event_id}
+          `;
+        }
         await finishEvent(sql, job.event_id);
         return;
       }
@@ -384,6 +438,30 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
         const alreadyExists = await meta.hasPublicReply(context, job.payload.commentId!, job.payload.message!);
         if (alreadyExists) {
           await markSent(job, "reconciled-public-reply");
+          return;
+        }
+      }
+
+      if (job.kind === "follow_up") {
+        const followUpJob = job;
+        const sessions = await sql<{ status: string; clicked_at: Date | null }[]>`
+          SELECT status, clicked_at FROM follow_up_sessions WHERE event_id = ${followUpJob.event_id}
+        `;
+        const session = sessions[0];
+        if (!session || session.clicked_at || session.status !== "scheduled") {
+          await sql.begin(async (tx) => {
+            await tx`
+              UPDATE jobs SET status = 'skipped', external_id = 'follow-up-cancelled',
+                dispatch_started_at = NULL, updated_at = NOW() WHERE id = ${followUpJob.id}
+            `;
+            if (session && session.status === "scheduled") {
+              await tx`
+                UPDATE follow_up_sessions SET status = 'cancelled', updated_at = NOW()
+                WHERE event_id = ${followUpJob.event_id}
+              `;
+            }
+          });
+          await finishEvent(sql, followUpJob.event_id);
           return;
         }
       }

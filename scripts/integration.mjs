@@ -134,6 +134,72 @@ try {
   assert.equal(delivered.length, 2);
   assert.ok(delivered.every((job) => job.attempts === 1), "Leader lease must prevent duplicate dispatch attempts");
 
+  const directRule = await request("/api/rules", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({
+      name: "Direct price", active: true, priority: 10, triggerType: "direct_message",
+      targetScope: "all", mediaId: null, matchMode: "contains", keywords: ["цена"],
+      publicReplyEnabled: false, publicReplies: [], dmText: "Вот информация о цене",
+      buttonText: "Открыть", buttonUrl: "https://example.com/price",
+      followUpEnabled: true, followUpDelayMinutes: 1,
+      followUpText: "Напоминаем: информация о цене доступна по кнопке",
+    }),
+  });
+  assert.equal(directRule.response.status, 201);
+  const directWebhook = await request("/webhooks/instagram", {
+    method: "POST",
+    body: JSON.stringify({ entry: [{ messaging: [{
+      sender: { id: "direct-user" }, recipient: { id: "17841400000000000" }, timestamp: Date.now(),
+      message: { mid: "integration-direct-1", text: "Какая цена?" },
+    }] }] }),
+  });
+  assert.equal(directWebhook.response.status, 200);
+  let followUpSession;
+  const directDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    [followUpSession] = await sql`
+      SELECT s.*, e.status AS event_status FROM follow_up_sessions s
+      JOIN events e ON e.id = s.event_id WHERE e.comment_id = 'integration-direct-1'
+    `;
+  } while (followUpSession?.status !== "scheduled" && Date.now() < directDeadline);
+  assert.equal(followUpSession.status, "scheduled");
+  assert.equal(followUpSession.event_status, "sent", "Delayed follow-up must not keep the main event pending");
+  const tracked = await fetch(`${base}/r/${followUpSession.tracking_token}`, { redirect: "manual" });
+  assert.equal(tracked.status, 302);
+  assert.equal(tracked.headers.get("location"), "https://example.com/price");
+  const [cancelledFollowUp] = await sql`SELECT status, clicked_at FROM follow_up_sessions WHERE event_id = ${followUpSession.event_id}`;
+  assert.equal(cancelledFollowUp.status, "cancelled");
+  assert.ok(cancelledFollowUp.clicked_at);
+  const [skippedFollowUp] = await sql`SELECT status FROM jobs WHERE event_id = ${followUpSession.event_id} AND kind = 'follow_up'`;
+  assert.equal(skippedFollowUp.status, "skipped");
+
+  const storyRule = await request("/api/rules", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({
+      name: "Story reaction", active: true, priority: 10, triggerType: "story_reply",
+      targetScope: "all", mediaId: null, matchMode: "any", keywords: [],
+      publicReplyEnabled: false, publicReplies: [], dmText: "Спасибо за реакцию!",
+      buttonText: null, buttonUrl: null,
+    }),
+  });
+  assert.equal(storyRule.response.status, 201);
+  const storyWebhook = await request("/webhooks/instagram", {
+    method: "POST",
+    body: JSON.stringify({ entry: [{ messaging: [{
+      sender: { id: "story-user" }, recipient: { id: "17841400000000000" }, timestamp: Date.now(),
+      message: { mid: "integration-story-1", text: "🔥", reply_to: { story: { id: "story-42", url: "https://cdn.example/story" } } },
+    }] }] }),
+  });
+  assert.equal(storyWebhook.response.status, 200);
+  let storyEvent;
+  const storyDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    [storyEvent] = await sql`SELECT status, trigger_type, media_id FROM events WHERE comment_id = 'integration-story-1'`;
+  } while (storyEvent?.status !== "sent" && Date.now() < storyDeadline);
+  assert.deepEqual(storyEvent, { status: "sent", trigger_type: "story_reply", media_id: "story-42" });
+
   const gateRule = await request("/api/rules", {
     method: "POST", headers: auth,
     body: JSON.stringify({

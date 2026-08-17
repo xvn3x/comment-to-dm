@@ -10,7 +10,13 @@ import rawBody from "fastify-raw-body";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import type { Db } from "./db.js";
-import { enqueueComment, extractComments, extractMessagingActions } from "./automation.js";
+import {
+  enqueueComment,
+  enqueueInboundMessage,
+  extractComments,
+  extractInboundMessages,
+  extractMessagingActions,
+} from "./automation.js";
 import { MetaClient } from "./meta.js";
 import { retryDecision } from "./rate-control.js";
 import { privacyPolicyHtml } from "./privacy.js";
@@ -32,6 +38,7 @@ const ruleSchema = z.object({
   name: z.string().trim().min(1).max(80),
   active: z.boolean().default(true),
   priority: z.number().int().min(1).max(10_000).default(100),
+  triggerType: z.enum(["comment", "direct_message", "story_reply"]).default("comment"),
   targetScope: z.enum(["all", "specific"]),
   mediaId: z.string().trim().min(1).max(100).nullable().optional(),
   matchMode: z.enum(["any", "contains", "exact"]),
@@ -45,12 +52,21 @@ const ruleSchema = z.object({
   followGatePrompt: z.string().trim().min(1).max(640).nullable().optional(),
   followGateButtonText: z.string().trim().min(1).max(20).nullable().optional(),
   followGateRetryText: z.string().trim().min(1).max(640).nullable().optional(),
+  followUpEnabled: z.boolean().default(false),
+  followUpDelayMinutes: z.number().int().min(1).max(1320).default(60),
+  followUpText: z.string().trim().min(1).max(640).nullable().optional(),
 }).superRefine((value, context) => {
+  if (value.triggerType === "direct_message" && value.targetScope !== "all") {
+    context.addIssue({ code: "custom", path: ["targetScope"], message: "Direct message rules apply to all conversations" });
+  }
   if (value.targetScope === "specific" && !value.mediaId) {
     context.addIssue({ code: "custom", path: ["mediaId"], message: "Media ID is required" });
   }
   if (value.matchMode !== "any" && !value.keywords.length) {
     context.addIssue({ code: "custom", path: ["keywords"], message: "Add at least one keyword" });
+  }
+  if (value.triggerType !== "comment" && value.publicReplyEnabled) {
+    context.addIssue({ code: "custom", path: ["publicReplyEnabled"], message: "Public replies are available only for comments" });
   }
   if (value.publicReplyEnabled && !value.publicReplies.length) {
     context.addIssue({ code: "custom", path: ["publicReplies"], message: "Add a public reply" });
@@ -69,6 +85,19 @@ const ruleSchema = z.object({
       if (text && Buffer.byteLength(text, "utf8") > 1000) context.addIssue({ code: "custom", path: [path], message: "Message exceeds 1000 UTF-8 bytes" });
     }
   }
+  if (value.followUpEnabled) {
+    if (value.triggerType === "comment" && !value.followGateEnabled) {
+      context.addIssue({ code: "custom", path: ["followUpEnabled"], message: "Comment follow-ups require the follower-check postback to open the messaging window" });
+    }
+    if (!value.buttonText || !value.buttonUrl) {
+      context.addIssue({ code: "custom", path: ["buttonUrl"], message: "A material link is required to detect whether the follow-up should be cancelled" });
+    }
+    if (!value.followUpText) {
+      context.addIssue({ code: "custom", path: ["followUpText"], message: "Add the follow-up message" });
+    } else if (Buffer.byteLength(value.followUpText, "utf8") > 1000) {
+      context.addIssue({ code: "custom", path: ["followUpText"], message: "Follow-up message exceeds 1000 UTF-8 bytes" });
+    }
+  }
   value.publicReplies.forEach((text, index) => {
     if (Buffer.byteLength(text, "utf8") > 1000) {
       context.addIssue({ code: "custom", path: ["publicReplies", index], message: "Public reply exceeds 1000 UTF-8 bytes" });
@@ -79,13 +108,16 @@ const ruleSchema = z.object({
 function toRuleValues(value: z.infer<typeof ruleSchema>) {
   return {
     ...value,
+    targetScope: value.triggerType === "direct_message" ? "all" as const : value.targetScope,
     mediaId: value.targetScope === "all" ? null : value.mediaId ?? null,
-    publicReplies: value.publicReplyEnabled ? value.publicReplies : [],
+    publicReplyEnabled: value.triggerType === "comment" ? value.publicReplyEnabled : false,
+    publicReplies: value.triggerType === "comment" && value.publicReplyEnabled ? value.publicReplies : [],
     buttonText: value.buttonText || null,
     buttonUrl: value.buttonUrl || null,
     followGatePrompt: value.followGateEnabled ? value.followGatePrompt || null : null,
     followGateButtonText: value.followGateEnabled ? value.followGateButtonText || null : null,
     followGateRetryText: value.followGateEnabled ? value.followGateRetryText || null : null,
+    followUpText: value.followUpEnabled ? value.followUpText || null : null,
   };
 }
 
@@ -166,6 +198,25 @@ export async function buildApp(sql: Db, config: AppConfig) {
     .send(privacyPolicyHtml());
   app.get("/privacy", sendPrivacyPolicy);
   app.get("/privacy/", sendPrivacyPolicy);
+  app.get("/r/:token", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const token = z.string().uuid().safeParse((request.params as { token?: unknown }).token);
+    if (!token.success) return reply.code(404).send({ error: "link_not_found" });
+    const rows = await sql<{ event_id: string; destination_url: string }[]>`
+      UPDATE follow_up_sessions SET clicked_at = COALESCE(clicked_at, NOW()),
+        status = CASE WHEN status IN ('awaiting_window', 'scheduled') THEN 'cancelled' ELSE status END,
+        updated_at = NOW()
+      WHERE tracking_token = ${token.data}
+      RETURNING event_id, destination_url
+    `;
+    const link = rows[0];
+    if (!link) return reply.code(404).send({ error: "link_not_found" });
+    await sql`
+      UPDATE jobs SET status = 'skipped', external_id = 'material-opened', dispatch_started_at = NULL, updated_at = NOW()
+      WHERE event_id = ${link.event_id} AND kind = 'follow_up'
+        AND status IN ('queued', 'retry_wait', 'uncertain')
+    `;
+    return reply.header("Cache-Control", "no-store").header("Referrer-Policy", "no-referrer").redirect(link.destination_url);
+  });
   app.get("/api/session", async (request) => ({
     authenticated: verifySession(request.cookies[cookieName], config.SESSION_SECRET),
     metaMode: config.META_MODE,
@@ -203,7 +254,7 @@ export async function buildApp(sql: Db, config: AppConfig) {
     `;
     const rules = await sql`SELECT * FROM rules ORDER BY priority ASC, created_at DESC`;
     const events = await sql`
-      SELECT e.id, e.comment_id, e.media_id, e.username, e.status, e.error_message, e.created_at, e.processed_at,
+      SELECT e.id, e.comment_id, e.media_id, e.username, e.trigger_type, e.status, e.error_message, e.created_at, e.processed_at,
              r.name AS rule_name
       FROM events e LEFT JOIN rules r ON r.id = e.rule_id
       ORDER BY e.created_at DESC LIMIT 100
@@ -218,7 +269,7 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const queue = await sql`
       SELECT
         COUNT(*) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS pending,
-        COUNT(*) FILTER (WHERE kind IN ('private_reply', 'direct_message', 'follow_check') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS private_pending,
+        COUNT(*) FILTER (WHERE kind IN ('private_reply', 'direct_message', 'follow_check', 'follow_up') AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS private_pending,
         COUNT(*) FILTER (WHERE kind = 'public_reply' AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS public_pending,
         COUNT(*) FILTER (WHERE status = 'retry_wait')::int AS retrying,
         COUNT(*) FILTER (WHERE status = 'uncertain')::int AS uncertain,
@@ -458,14 +509,16 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const value = toRuleValues(parsed.data);
     const rows = await sql`
       INSERT INTO rules (
-        id, name, active, priority, target_scope, media_id, match_mode, keywords,
+        id, name, active, priority, trigger_type, target_scope, media_id, match_mode, keywords,
         public_reply_enabled, public_replies, dm_text, button_text, button_url,
-        follow_gate_enabled, follow_gate_prompt, follow_gate_button_text, follow_gate_retry_text
+        follow_gate_enabled, follow_gate_prompt, follow_gate_button_text, follow_gate_retry_text,
+        follow_up_enabled, follow_up_delay_minutes, follow_up_text
       ) VALUES (
-        ${randomUUID()}, ${value.name}, ${value.active}, ${value.priority}, ${value.targetScope}, ${value.mediaId},
+        ${randomUUID()}, ${value.name}, ${value.active}, ${value.priority}, ${value.triggerType}, ${value.targetScope}, ${value.mediaId},
         ${value.matchMode}, ${sql.json(value.keywords)}, ${value.publicReplyEnabled}, ${sql.json(value.publicReplies)},
         ${value.dmText}, ${value.buttonText}, ${value.buttonUrl}, ${value.followGateEnabled},
-        ${value.followGatePrompt}, ${value.followGateButtonText}, ${value.followGateRetryText}
+        ${value.followGatePrompt}, ${value.followGateButtonText}, ${value.followGateRetryText},
+        ${value.followUpEnabled}, ${value.followUpDelayMinutes}, ${value.followUpText}
       ) RETURNING *
     `;
     return reply.code(201).send(rows[0]);
@@ -478,12 +531,15 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const value = toRuleValues(parsed.data);
     const rows = await sql`
       UPDATE rules SET name = ${value.name}, active = ${value.active}, priority = ${value.priority},
+        trigger_type = ${value.triggerType},
         target_scope = ${value.targetScope}, media_id = ${value.mediaId}, match_mode = ${value.matchMode},
         keywords = ${sql.json(value.keywords)}, public_reply_enabled = ${value.publicReplyEnabled},
         public_replies = ${sql.json(value.publicReplies)}, dm_text = ${value.dmText},
         button_text = ${value.buttonText}, button_url = ${value.buttonUrl},
         follow_gate_enabled = ${value.followGateEnabled}, follow_gate_prompt = ${value.followGatePrompt},
         follow_gate_button_text = ${value.followGateButtonText}, follow_gate_retry_text = ${value.followGateRetryText},
+        follow_up_enabled = ${value.followUpEnabled}, follow_up_delay_minutes = ${value.followUpDelayMinutes},
+        follow_up_text = ${value.followUpText},
         updated_at = NOW()
       WHERE id = ${id.data} RETURNING *
     `;
@@ -511,7 +567,26 @@ export async function buildApp(sql: Db, config: AppConfig) {
       senderId: `mock-user-${parsed.data.username}`,
       username: parsed.data.username,
       text: parsed.data.text,
-    });
+    }, { publicBaseUrl: config.PUBLIC_BASE_URL });
+    return { result };
+  });
+
+  app.post("/api/mock/message", { preHandler: requireAuth }, async (request, reply) => {
+    if (config.META_MODE !== "mock") return reply.code(404).send({ error: "not_found" });
+    const parsed = z.object({
+      text: z.string().max(1000).default(""),
+      kind: z.enum(["direct_message", "story_reply"]),
+      senderId: z.string().min(1).default(`mock-inbound-${randomUUID()}`),
+      storyId: z.string().min(1).optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_input" });
+    const result = await enqueueInboundMessage(sql, {
+      messageId: `mock-message-${randomUUID()}`,
+      senderId: parsed.data.senderId,
+      text: parsed.data.text,
+      kind: parsed.data.kind,
+      storyId: parsed.data.kind === "story_reply" ? parsed.data.storyId ?? "mock-story" : undefined,
+    }, { publicBaseUrl: config.PUBLIC_BASE_URL });
     return { result };
   });
 
@@ -544,19 +619,28 @@ export async function buildApp(sql: Db, config: AppConfig) {
       ...comment,
       isSelf: comment.isSelf || Boolean(connectedId && comment.senderId === connectedId),
     }));
+    const inboundMessages = extractInboundMessages(request.body).map((message) => ({
+      ...message,
+      isSelf: message.isSelf || Boolean(connectedId && message.senderId === connectedId),
+    }));
     const messagingActions = extractMessagingActions(request.body)
-      .filter((action) => action.payload.startsWith("follow_gate:"));
+      .filter((action) => !action.isSelf && (!connectedId || action.senderId !== connectedId) && action.payload.startsWith("follow_gate:"));
     const hasInstagramEntries = Boolean(request.body && typeof request.body === "object"
       && Array.isArray((request.body as { entry?: unknown }).entry)
       && (request.body as { entry: unknown[] }).entry.length);
     await sql`
       UPDATE meta_connection SET last_webhook_at = NOW(),
-        last_webhook_error = ${hasInstagramEntries && comments.length === 0 && messagingActions.length === 0 ? "Instagram webhook contained no recognized events." : null},
-        unparsed_webhooks = unparsed_webhooks + ${hasInstagramEntries && comments.length === 0 && messagingActions.length === 0 ? 1 : 0}, updated_at = NOW()
+        last_webhook_error = ${hasInstagramEntries && comments.length === 0 && inboundMessages.length === 0 && messagingActions.length === 0 ? "Instagram webhook contained no recognized events." : null},
+        unparsed_webhooks = unparsed_webhooks + ${hasInstagramEntries && comments.length === 0 && inboundMessages.length === 0 && messagingActions.length === 0 ? 1 : 0}, updated_at = NOW()
       WHERE singleton = TRUE
     `;
     for (let index = 0; index < comments.length; index += 20) {
-      await Promise.all(comments.slice(index, index + 20).map((comment) => enqueueComment(sql, comment)));
+      await Promise.all(comments.slice(index, index + 20)
+        .map((comment) => enqueueComment(sql, comment, { publicBaseUrl: config.PUBLIC_BASE_URL })));
+    }
+    for (let index = 0; index < inboundMessages.length; index += 20) {
+      await Promise.all(inboundMessages.slice(index, index + 20)
+        .map((message) => enqueueInboundMessage(sql, message, { publicBaseUrl: config.PUBLIC_BASE_URL })));
     }
     for (const action of messagingActions) {
       const eventId = action.payload.slice("follow_gate:".length);

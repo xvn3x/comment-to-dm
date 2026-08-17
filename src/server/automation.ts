@@ -1,16 +1,40 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
-import { pickPublicReply, ruleMatches, type InstagramComment, type RuleRecord } from "./rules.js";
+import {
+  inboundRuleMatches,
+  pickPublicReply,
+  ruleMatches,
+  type InstagramComment,
+  type InstagramInboundMessage,
+  type RuleRecord,
+} from "./rules.js";
 
-export async function enqueueComment(sql: Db, comment: InstagramComment): Promise<"queued" | "duplicate" | "no_match" | "ignored_self"> {
+type EnqueueOptions = { publicBaseUrl?: string };
+type EnqueueResult = "queued" | "duplicate" | "no_match" | "ignored_self";
+
+function trackedMaterialUrl(baseUrl: string | undefined, token: string): string {
+  if (!baseUrl) throw new Error("PUBLIC_BASE_URL is required for a tracked follow-up link.");
+  return new URL(`/r/${token}`, baseUrl).toString();
+}
+
+export async function enqueueComment(
+  sql: Db,
+  comment: InstagramComment,
+  options: EnqueueOptions = {},
+): Promise<EnqueueResult> {
   if (comment.isSelf) return "ignored_self";
   const rules = await sql<RuleRecord[]>`
-    SELECT * FROM rules WHERE active = TRUE ORDER BY priority ASC, created_at ASC
+    SELECT * FROM rules WHERE active = TRUE AND trigger_type = 'comment' ORDER BY priority ASC, created_at ASC
   `;
   const rule = rules.find((candidate) => ruleMatches(candidate, comment));
   if (!rule) return "no_match";
 
   const eventId = randomUUID();
+  const trackingToken = rule.follow_up_enabled && rule.follow_gate_enabled ? randomUUID() : undefined;
+  const finalButtonUrl = trackingToken
+    ? trackedMaterialUrl(options.publicBaseUrl, trackingToken)
+    : rule.button_url;
+
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${comment.senderId}:${comment.mediaId}:${rule.id}`}, 0))`;
     const previous = await tx<{ id: string }[]>`
@@ -23,16 +47,16 @@ export async function enqueueComment(sql: Db, comment: InstagramComment): Promis
     `;
     if (previous.length) {
       await tx`
-        INSERT INTO events (id, comment_id, media_id, sender_id, username, rule_id, status, processed_at)
-        VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, ${rule.id}, 'skipped_duplicate', NOW())
+        INSERT INTO events (id, comment_id, media_id, sender_id, username, trigger_type, rule_id, status, processed_at)
+        VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, 'comment', ${rule.id}, 'skipped_duplicate', NOW())
         ON CONFLICT (comment_id) DO NOTHING
       `;
       return "duplicate" as const;
     }
 
     const inserted = await tx<{ id: string }[]>`
-      INSERT INTO events (id, comment_id, media_id, sender_id, username, rule_id, status)
-      VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, ${rule.id}, 'queued')
+      INSERT INTO events (id, comment_id, media_id, sender_id, username, trigger_type, rule_id, status)
+      VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId}, ${comment.username ?? null}, 'comment', ${rule.id}, 'queued')
       ON CONFLICT (comment_id) DO NOTHING
       RETURNING id
     `;
@@ -47,13 +71,24 @@ export async function enqueueComment(sql: Db, comment: InstagramComment): Promis
         VALUES (${randomUUID()}, ${eventId}, 'public_reply', ${tx.json({ commentId: comment.commentId, message: publicMessage })})
       `;
     }
+    if (trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
+      await tx`
+        INSERT INTO follow_up_sessions (
+          event_id, tracking_token, destination_url, material_button_text,
+          follow_up_text, delay_minutes
+        ) VALUES (
+          ${eventId}, ${trackingToken}, ${rule.button_url}, ${rule.button_text},
+          ${rule.follow_up_text}, ${rule.follow_up_delay_minutes}
+        )
+      `;
+    }
     if (rule.follow_gate_enabled) {
       await tx`
         INSERT INTO follow_gate_sessions (
           event_id, final_message, final_button_text, final_button_url,
           check_button_text, retry_message
         ) VALUES (
-          ${eventId}, ${rule.dm_text}, ${rule.button_text}, ${rule.button_url},
+          ${eventId}, ${rule.dm_text}, ${rule.button_text}, ${finalButtonUrl},
           ${rule.follow_gate_button_text!}, ${rule.follow_gate_retry_text!}
         )
       `;
@@ -78,10 +113,84 @@ export async function enqueueComment(sql: Db, comment: InstagramComment): Promis
   });
 }
 
+export async function enqueueInboundMessage(
+  sql: Db,
+  message: InstagramInboundMessage,
+  options: EnqueueOptions = {},
+): Promise<EnqueueResult> {
+  if (message.isSelf) return "ignored_self";
+  const rules = await sql<RuleRecord[]>`
+    SELECT * FROM rules WHERE active = TRUE AND trigger_type = ${message.kind}
+    ORDER BY priority ASC, created_at ASC
+  `;
+  const rule = rules.find((candidate) => inboundRuleMatches(candidate, message));
+  if (!rule) return "no_match";
+
+  const eventId = randomUUID();
+  const trackingToken = rule.follow_up_enabled ? randomUUID() : undefined;
+  const materialButtonUrl = trackingToken
+    ? trackedMaterialUrl(options.publicBaseUrl, trackingToken)
+    : rule.button_url;
+  const mediaId = message.kind === "story_reply" ? message.storyId ?? "story" : "direct";
+
+  return sql.begin(async (tx) => {
+    const inserted = await tx<{ id: string }[]>`
+      INSERT INTO events (id, comment_id, media_id, sender_id, trigger_type, rule_id, status)
+      VALUES (${eventId}, ${message.messageId}, ${mediaId}, ${message.senderId}, ${message.kind}, ${rule.id}, 'queued')
+      ON CONFLICT (comment_id) DO NOTHING
+      RETURNING id
+    `;
+    if (!inserted.length) return "duplicate" as const;
+
+    if (trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
+      await tx`
+        INSERT INTO follow_up_sessions (
+          event_id, scoped_user_id, tracking_token, destination_url, material_button_text,
+          follow_up_text, delay_minutes
+        ) VALUES (
+          ${eventId}, ${message.senderId}, ${trackingToken}, ${rule.button_url}, ${rule.button_text},
+          ${rule.follow_up_text}, ${rule.follow_up_delay_minutes}
+        )
+      `;
+    }
+    if (rule.follow_gate_enabled) {
+      await tx`
+        INSERT INTO follow_gate_sessions (
+          event_id, scoped_user_id, final_message, final_button_text, final_button_url,
+          check_button_text, retry_message
+        ) VALUES (
+          ${eventId}, ${message.senderId}, ${rule.dm_text}, ${rule.button_text}, ${materialButtonUrl},
+          ${rule.follow_gate_button_text!}, ${rule.follow_gate_retry_text!}
+        )
+      `;
+    }
+
+    await tx`
+      INSERT INTO jobs (id, event_id, kind, payload)
+      VALUES (
+        ${randomUUID()}, ${eventId}, 'direct_message',
+        ${tx.json({
+          scopedUserId: message.senderId,
+          message: rule.follow_gate_enabled ? rule.follow_gate_prompt : rule.dm_text,
+          button: !rule.follow_gate_enabled && rule.button_text && materialButtonUrl
+            ? { title: rule.button_text, url: materialButtonUrl } : undefined,
+          quickReply: rule.follow_gate_enabled
+            ? { title: rule.follow_gate_button_text, payload: `follow_gate:${eventId}` } : undefined,
+          followGate: rule.follow_gate_enabled,
+          scheduleFollowUp: Boolean(rule.follow_up_enabled && !rule.follow_gate_enabled),
+          expiresAt: new Date(Date.now() + 23 * 3_600_000).toISOString(),
+        })}
+      )
+    `;
+    return "queued" as const;
+  });
+}
+
 export type InstagramMessagingAction = {
   senderId: string;
   interactionId: string;
   payload: string;
+  isSelf?: boolean;
 };
 
 export function extractMessagingActions(payload: unknown): InstagramMessagingAction[] {
@@ -111,10 +220,49 @@ export function extractMessagingActions(payload: unknown): InstagramMessagingAct
         senderId: String(sender.id),
         interactionId: messageId ? String(messageId) : `${sender.id}:${record.timestamp ?? actionPayload}`,
         payload: actionPayload,
+        ...((record.is_self === true || message.is_self === true || message.is_echo === true) ? { isSelf: true } : {}),
       });
     }
   }
   return actions;
+}
+
+export function extractInboundMessages(payload: unknown): InstagramInboundMessage[] {
+  if (!payload || typeof payload !== "object") return [];
+  const entries = Array.isArray((payload as { entry?: unknown }).entry)
+    ? (payload as { entry: unknown[] }).entry : [];
+  const messages: InstagramInboundMessage[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const messaging = Array.isArray((entry as { messaging?: unknown }).messaging)
+      ? (entry as { messaging: unknown[] }).messaging : [];
+    for (const item of messaging) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      const sender = record.sender && typeof record.sender === "object"
+        ? record.sender as Record<string, unknown> : {};
+      const recipient = record.recipient && typeof record.recipient === "object"
+        ? record.recipient as Record<string, unknown> : {};
+      const message = record.message && typeof record.message === "object"
+        ? record.message as Record<string, unknown> : undefined;
+      if (!message || !sender.id || !message.mid) continue;
+      if (message.is_deleted === true || message.is_unsupported === true || message.quick_reply) continue;
+      const replyTo = message.reply_to && typeof message.reply_to === "object"
+        ? message.reply_to as Record<string, unknown> : {};
+      const story = replyTo.story && typeof replyTo.story === "object"
+        ? replyTo.story as Record<string, unknown> : undefined;
+      messages.push({
+        messageId: String(message.mid),
+        senderId: String(sender.id),
+        recipientId: recipient.id ? String(recipient.id) : undefined,
+        text: typeof message.text === "string" ? message.text : "",
+        kind: story ? "story_reply" : "direct_message",
+        storyId: story?.id ? String(story.id) : undefined,
+        isSelf: record.is_self === true || message.is_self === true || message.is_echo === true,
+      });
+    }
+  }
+  return messages;
 }
 
 export function extractComments(payload: unknown): InstagramComment[] {

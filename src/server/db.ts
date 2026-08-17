@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS rules (
   name TEXT NOT NULL,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   priority INTEGER NOT NULL DEFAULT 100,
+  trigger_type TEXT NOT NULL DEFAULT 'comment' CHECK (trigger_type IN ('comment', 'direct_message', 'story_reply')),
   target_scope TEXT NOT NULL CHECK (target_scope IN ('all', 'specific')),
   media_id TEXT,
   match_mode TEXT NOT NULL CHECK (match_mode IN ('any', 'contains', 'exact')),
@@ -71,6 +72,9 @@ CREATE TABLE IF NOT EXISTS rules (
   follow_gate_prompt TEXT,
   follow_gate_button_text TEXT,
   follow_gate_retry_text TEXT,
+  follow_up_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  follow_up_delay_minutes INTEGER NOT NULL DEFAULT 60 CHECK (follow_up_delay_minutes BETWEEN 1 AND 1320),
+  follow_up_text TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK ((target_scope = 'all' AND media_id IS NULL) OR (target_scope = 'specific' AND media_id IS NOT NULL)),
@@ -85,6 +89,7 @@ CREATE TABLE IF NOT EXISTS events (
   media_id TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   username TEXT,
+  trigger_type TEXT NOT NULL DEFAULT 'comment' CHECK (trigger_type IN ('comment', 'direct_message', 'story_reply')),
   rule_id UUID REFERENCES rules(id) ON DELETE SET NULL,
   status TEXT NOT NULL,
   error_message TEXT,
@@ -98,7 +103,7 @@ CREATE INDEX IF NOT EXISTS events_dedupe_idx ON events (sender_id, media_id, rul
 CREATE TABLE IF NOT EXISTS jobs (
   id UUID PRIMARY KEY,
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply', 'direct_message', 'follow_check')),
+  kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply', 'direct_message', 'follow_check', 'follow_up')),
   interaction_id TEXT UNIQUE,
   payload JSONB NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'retry_wait', 'uncertain', 'sent', 'failed', 'dead_letter', 'expired', 'skipped')),
@@ -110,6 +115,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_error_code TEXT,
   last_error_action TEXT,
   external_id TEXT,
+  affects_event_status BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -135,6 +141,24 @@ CREATE TABLE IF NOT EXISTS follow_gate_sessions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK ((final_button_text IS NULL AND final_button_url IS NULL) OR
          (final_button_text IS NOT NULL AND final_button_url IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS follow_up_sessions (
+  event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+  scoped_user_id TEXT,
+  tracking_token UUID NOT NULL UNIQUE,
+  destination_url TEXT NOT NULL,
+  material_button_text TEXT NOT NULL,
+  follow_up_text TEXT NOT NULL,
+  delay_minutes INTEGER NOT NULL CHECK (delay_minutes BETWEEN 1 AND 1320),
+  status TEXT NOT NULL DEFAULT 'awaiting_window'
+    CHECK (status IN ('awaiting_window', 'scheduled', 'cancelled', 'sent', 'failed')),
+  clicked_at TIMESTAMPTZ,
+  scheduled_at TIMESTAMPTZ,
+  sent_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 `;
 
@@ -223,6 +247,49 @@ const migrations = [
       ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
       ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
         CHECK (kind IN ('public_reply', 'private_reply', 'direct_message', 'follow_check'));
+    `,
+  },
+  {
+    version: 6,
+    sql: `
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS trigger_type TEXT NOT NULL DEFAULT 'comment';
+      ALTER TABLE rules DROP CONSTRAINT IF EXISTS rules_trigger_type_check;
+      ALTER TABLE rules ADD CONSTRAINT rules_trigger_type_check
+        CHECK (trigger_type IN ('comment', 'direct_message', 'story_reply'));
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_up_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_up_delay_minutes INTEGER NOT NULL DEFAULT 60;
+      ALTER TABLE rules DROP CONSTRAINT IF EXISTS rules_follow_up_delay_minutes_check;
+      ALTER TABLE rules ADD CONSTRAINT rules_follow_up_delay_minutes_check
+        CHECK (follow_up_delay_minutes BETWEEN 1 AND 1320);
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS follow_up_text TEXT;
+
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS trigger_type TEXT NOT NULL DEFAULT 'comment';
+      ALTER TABLE events DROP CONSTRAINT IF EXISTS events_trigger_type_check;
+      ALTER TABLE events ADD CONSTRAINT events_trigger_type_check
+        CHECK (trigger_type IN ('comment', 'direct_message', 'story_reply'));
+
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS affects_event_status BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
+      ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
+        CHECK (kind IN ('public_reply', 'private_reply', 'direct_message', 'follow_check', 'follow_up'));
+
+      CREATE TABLE IF NOT EXISTS follow_up_sessions (
+        event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+        scoped_user_id TEXT,
+        tracking_token UUID NOT NULL UNIQUE,
+        destination_url TEXT NOT NULL,
+        material_button_text TEXT NOT NULL,
+        follow_up_text TEXT NOT NULL,
+        delay_minutes INTEGER NOT NULL CHECK (delay_minutes BETWEEN 1 AND 1320),
+        status TEXT NOT NULL DEFAULT 'awaiting_window'
+          CHECK (status IN ('awaiting_window', 'scheduled', 'cancelled', 'sent', 'failed')),
+        clicked_at TIMESTAMPTZ,
+        scheduled_at TIMESTAMPTZ,
+        sent_at TIMESTAMPTZ,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `,
   },
 ];
