@@ -358,6 +358,42 @@ export async function buildApp(sql: Db, config: AppConfig) {
     }
   });
 
+  app.post("/api/meta/follow-status", { preHandler: requireAuth }, async (request, reply) => {
+    const parsed = z.object({ eventId: z.string().uuid() }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_event" });
+    const events = await sql<{ sender_id: string; username: string | null }[]>`
+      SELECT sender_id, username FROM events WHERE id = ${parsed.data.eventId}
+    `;
+    if (!events[0]) return reply.code(404).send({ error: "event_not_found" });
+    const connections = await sql<{ ig_user_id: string | null; token_enc: string | null; graph_version: string }[]>`
+      SELECT ig_user_id, token_enc, graph_version FROM meta_connection WHERE singleton = TRUE
+    `;
+    const connection = connections[0];
+    if (!connection?.ig_user_id || !connection.token_enc) {
+      return reply.code(409).send({ error: "instagram_not_connected" });
+    }
+    try {
+      const status = await meta.userFollowStatus({
+        igUserId: connection.ig_user_id,
+        token: box.open(connection.token_enc),
+        graphVersion: connection.graph_version,
+      }, events[0].sender_id);
+      return {
+        available: true,
+        username: status.username ?? events[0].username,
+        isUserFollowBusiness: status.isUserFollowBusiness,
+        isBusinessFollowUser: status.isBusinessFollowUser,
+      };
+    } catch (error) {
+      request.log.info({ err: error, eventId: parsed.data.eventId }, "Follower status diagnostic was unavailable");
+      return {
+        available: false,
+        username: events[0].username,
+        reason: error instanceof Error ? error.message.slice(0, 500) : "Meta profile lookup failed",
+      };
+    }
+  });
+
   app.get("/api/meta/media", { preHandler: requireAuth }, async (_request, reply) => {
     const rows = await sql<{ ig_user_id: string | null; token_enc: string | null; graph_version: string }[]>`
       SELECT ig_user_id, token_enc, graph_version FROM meta_connection WHERE singleton = TRUE

@@ -211,6 +211,30 @@ export class MetaClient {
     return { id, username: body.username ? String(body.username) : undefined };
   }
 
+  async userFollowStatus(context: SendContext, scopedUserId: string): Promise<{
+    username?: string;
+    isUserFollowBusiness: boolean;
+    isBusinessFollowUser?: boolean;
+  }> {
+    if (this.config.META_MODE === "mock") {
+      return { username: "demo_follower", isUserFollowBusiness: true, isBusinessFollowUser: false };
+    }
+    const url = new URL(`https://graph.instagram.com/${context.graphVersion}/${scopedUserId}`);
+    url.searchParams.set("fields", "username,is_user_follow_business,is_business_follow_user");
+    const body = await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } });
+    if (typeof body.is_user_follow_business !== "boolean") {
+      throw new MetaApiError(
+        "Meta did not return follower status. The Instagram user may not have granted messaging profile consent.",
+        409,
+      );
+    }
+    return {
+      username: body.username ? String(body.username) : undefined,
+      isUserFollowBusiness: body.is_user_follow_business,
+      isBusinessFollowUser: typeof body.is_business_follow_user === "boolean" ? body.is_business_follow_user : undefined,
+    };
+  }
+
   async subscribeToComments(context: SendContext): Promise<void> {
     if (this.config.META_MODE === "mock") return;
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/subscribed_apps`;

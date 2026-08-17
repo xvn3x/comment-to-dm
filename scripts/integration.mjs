@@ -118,6 +118,13 @@ try {
   assert.equal(dashboard.body.connection.username, "demo_account");
   assert.equal(dashboard.body.events[0].status, "sent");
   assert.equal(dashboard.body.stats.sent_24h, 1);
+  const follow = await request("/api/meta/follow-status", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({ eventId: dashboard.body.events[0].id }),
+  });
+  assert.equal(follow.response.status, 200);
+  assert.equal(follow.body.available, true);
+  assert.equal(follow.body.isUserFollowBusiness, true);
   const delivered = await sql`SELECT kind, attempts FROM jobs ORDER BY kind`;
   assert.equal(delivered.length, 2);
   assert.ok(delivered.every((job) => job.attempts === 1), "Leader lease must prevent duplicate dispatch attempts");

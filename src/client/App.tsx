@@ -72,6 +72,14 @@ type Dashboard = {
 
 type MediaItem = { id: string; caption?: string; mediaType?: string; permalink?: string; timestamp?: string };
 
+type FollowCheck = {
+  eventId: string;
+  username: string | null;
+  available: boolean;
+  isUserFollowBusiness?: boolean;
+  reason?: string;
+};
+
 type RuleForm = {
   name: string;
   active: boolean;
@@ -133,6 +141,7 @@ export function App() {
   const [metaConfig, setMetaConfig] = useState({ appId: "", appSecret: "", graphVersion: "v25.0" });
   const [mockComment, setMockComment] = useState("гайд");
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [followCheck, setFollowCheck] = useState<FollowCheck | null>(null);
 
   const connected = Boolean(dashboard?.connection.ig_user_id);
   const activeRules = useMemo(() => dashboard?.rules.filter((item) => item.active).length ?? 0, [dashboard]);
@@ -230,6 +239,19 @@ export function App() {
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Проверка подключения не прошла.");
       await refresh().catch(() => undefined);
+    } finally { setBusy(false); }
+  }
+
+  async function checkFollowStatus(eventId: string) {
+    setBusy(true); setError(""); setFollowCheck(null);
+    try {
+      const result = await api<Omit<FollowCheck, "eventId">>("/api/meta/follow-status", {
+        method: "POST",
+        body: JSON.stringify({ eventId }),
+      });
+      setFollowCheck({ eventId, ...result });
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Не удалось проверить подписку.");
     } finally { setBusy(false); }
   }
 
@@ -400,7 +422,18 @@ export function App() {
         <section className="panel">
           <div className="panel-title"><div><h2>Последние события</h2><p>Журнал хранится 30 дней. Тексты комментариев не сохраняются.</p></div></div>
           {!dashboard?.events.length ? <div className="empty compact">Здесь появятся отправки и ошибки.</div> : <div className="events">
-            {dashboard.events.map((event) => <div className="event" key={event.id}><span className={`status ${event.status}`}>{statusLabel(event.status)}</span><strong>@{event.username ?? "unknown"}</strong><span>{event.rule_name ?? "Удалённое правило"}</span><time>{new Date(event.created_at).toLocaleString("ru-RU")}</time></div>)}
+            {dashboard.events.map((event) => <div className="event" key={event.id}>
+              <span className={`status ${event.status}`}>{statusLabel(event.status)}</span>
+              <strong>@{event.username ?? "unknown"}</strong>
+              <span>{event.rule_name ?? "Удалённое правило"}</span>
+              <time>{new Date(event.created_at).toLocaleString("ru-RU")}</time>
+              <button className="ghost follow-check-button" disabled={busy || !connected} onClick={() => void checkFollowStatus(event.id)}>Проверить подписку</button>
+              {followCheck?.eventId === event.id && <small className={`follow-result ${followCheck.available && followCheck.isUserFollowBusiness ? "following" : "not-following"}`}>
+                {followCheck.available
+                  ? followCheck.isUserFollowBusiness ? "Подписка подтверждена" : "Пользователь не подписан"
+                  : `Meta не разрешила проверку: ${followCheck.reason ?? "нет согласия на доступ к профилю"}`}
+              </small>}
+            </div>)}
           </div>}
         </section>
       </main>

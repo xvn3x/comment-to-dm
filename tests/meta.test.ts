@@ -70,3 +70,20 @@ test("Instagram usage headers drive adaptive throttling", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("messaging profile exposes whether the user follows the business", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    username: "guide_reader",
+    is_user_follow_business: true,
+    is_business_follow_user: false,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    const result = await new MetaClient(config).userFollowStatus(context, "scoped-user-id");
+    assert.equal(result.username, "guide_reader");
+    assert.equal(result.isUserFollowBusiness, true);
+    assert.equal(result.isBusinessFollowUser, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
