@@ -217,20 +217,29 @@ export async function buildApp(sql: Db, config: AppConfig) {
   app.get("/r/:token", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
     const token = z.string().uuid().safeParse((request.params as { token?: unknown }).token);
     if (!token.success) return reply.code(404).send({ error: "link_not_found" });
-    const rows = await sql<{ event_id: string; destination_url: string }[]>`
-      UPDATE follow_up_sessions SET clicked_at = COALESCE(clicked_at, NOW()),
-        status = CASE WHEN status IN ('awaiting_window', 'scheduled') THEN 'cancelled' ELSE status END,
-        updated_at = NOW()
-      WHERE tracking_token = ${token.data}
-      RETURNING event_id, destination_url
-    `;
-    const link = rows[0];
+    const link = await sql.begin(async (tx) => {
+      const rows = await tx<{ event_id: string; destination_url: string }[]>`
+        UPDATE link_tracking SET first_clicked_at = COALESCE(first_clicked_at, NOW()),
+          click_count = click_count + 1, updated_at = NOW()
+        WHERE tracking_token = ${token.data}
+        RETURNING event_id, destination_url
+      `;
+      const tracked = rows[0];
+      if (!tracked) return undefined;
+      await tx`
+        UPDATE follow_up_sessions SET clicked_at = COALESCE(clicked_at, NOW()),
+          status = CASE WHEN status IN ('awaiting_window', 'scheduled') THEN 'cancelled' ELSE status END,
+          updated_at = NOW()
+        WHERE event_id = ${tracked.event_id}
+      `;
+      await tx`
+        UPDATE jobs SET status = 'skipped', external_id = 'material-opened', dispatch_started_at = NULL, updated_at = NOW()
+        WHERE event_id = ${tracked.event_id} AND kind = 'follow_up'
+          AND status IN ('queued', 'retry_wait', 'uncertain')
+      `;
+      return tracked;
+    });
     if (!link) return reply.code(404).send({ error: "link_not_found" });
-    await sql`
-      UPDATE jobs SET status = 'skipped', external_id = 'material-opened', dispatch_started_at = NULL, updated_at = NOW()
-      WHERE event_id = ${link.event_id} AND kind = 'follow_up'
-        AND status IN ('queued', 'retry_wait', 'uncertain')
-    `;
     return reply.header("Cache-Control", "no-store").header("Referrer-Policy", "no-referrer").redirect(link.destination_url);
   });
   app.get("/api/session", async (request) => ({
@@ -270,17 +279,56 @@ export async function buildApp(sql: Db, config: AppConfig) {
     `;
     const rules = await sql`SELECT * FROM rules ORDER BY priority ASC, created_at DESC`;
     const events = await sql`
-      SELECT e.id, e.comment_id, e.media_id, e.username, e.trigger_type, e.status, e.error_message, e.created_at, e.processed_at,
-             r.name AS rule_name
+      SELECT e.id, e.comment_id, e.media_id, e.sender_id, e.username, e.trigger_type, e.status,
+             e.error_message, e.created_at, e.processed_at, r.name AS rule_name,
+             lt.delivered_at AS link_delivered_at, lt.first_clicked_at AS link_clicked_at,
+             lt.click_count AS link_click_count
       FROM events e LEFT JOIN rules r ON r.id = e.rule_id
+      LEFT JOIN link_tracking lt ON lt.event_id = e.id
       ORDER BY e.created_at DESC LIMIT 100
     `;
     const stats = await sql`
       SELECT
         COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS total_24h,
         COUNT(*) FILTER (WHERE status = 'sent' AND created_at >= NOW() - INTERVAL '24 hours')::int AS sent_24h,
-        COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '24 hours')::int AS failed_24h
+        COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '24 hours')::int AS failed_24h,
+        (SELECT COUNT(*)::int FROM jobs
+          WHERE status = 'sent' AND kind <> 'follow_check' AND updated_at >= NOW() - INTERVAL '24 hours'
+        ) AS deliveries_24h
       FROM events
+    `;
+    const hourly = await sql`
+      SELECT date_trunc('hour', updated_at) AS hour, COUNT(*)::int AS deliveries
+      FROM jobs
+      WHERE status = 'sent' AND kind <> 'follow_check'
+        AND updated_at >= date_trunc('hour', NOW()) - INTERVAL '23 hours'
+      GROUP BY date_trunc('hour', updated_at)
+      ORDER BY hour ASC
+    `;
+    const linkStats = await sql`
+      SELECT
+        COUNT(*) FILTER (WHERE delivered_at >= NOW() - INTERVAL '24 hours')::int AS delivered_24h,
+        COUNT(*) FILTER (WHERE delivered_at >= NOW() - INTERVAL '24 hours' AND first_clicked_at IS NOT NULL)::int AS opened_24h
+      FROM link_tracking
+    `;
+    const ruleAnalytics = await sql`
+      SELECT r.id,
+        COUNT(DISTINCT e.id) FILTER (WHERE e.created_at >= NOW() - INTERVAL '24 hours')::int AS triggered_24h,
+        COUNT(DISTINCT e.id) FILTER (
+          WHERE e.created_at >= NOW() - INTERVAL '24 hours'
+            AND j.status = 'sent' AND j.kind IN ('private_reply', 'direct_message')
+        )::int AS direct_24h,
+        COUNT(DISTINCT e.id) FILTER (
+          WHERE e.created_at >= NOW() - INTERVAL '24 hours' AND lt.first_clicked_at IS NOT NULL
+        )::int AS opened_24h,
+        COUNT(DISTINCT e.id) FILTER (
+          WHERE e.created_at >= NOW() - INTERVAL '24 hours' AND e.status = 'failed'
+        )::int AS failed_24h
+      FROM rules r
+      LEFT JOIN events e ON e.rule_id = r.id AND e.created_at >= NOW() - INTERVAL '24 hours'
+      LEFT JOIN jobs j ON j.event_id = e.id AND j.status = 'sent'
+      LEFT JOIN link_tracking lt ON lt.event_id = e.id
+      GROUP BY r.id
     `;
     const queue = await sql`
       SELECT
@@ -297,9 +345,18 @@ export async function buildApp(sql: Db, config: AppConfig) {
     `;
     return {
       connection: connectionRows[0],
-      rules,
+      rules: rules.map((rule) => ({
+        ...rule,
+        analytics: ruleAnalytics.find((item) => item.id === rule.id) ?? {
+          triggered_24h: 0, direct_24h: 0, opened_24h: 0, failed_24h: 0,
+        },
+      })),
       events,
       stats: stats[0],
+      analytics: {
+        hourly,
+        links: linkStats[0] ?? { delivered_24h: 0, opened_24h: 0 },
+      },
       queue: queue[0],
       urls: {
         oauthCallback: `${config.PUBLIC_BASE_URL}/api/meta/oauth/callback`,
@@ -309,6 +366,33 @@ export async function buildApp(sql: Db, config: AppConfig) {
       },
       metaMode: config.META_MODE,
     };
+  });
+
+  app.get("/api/events/:id", { preHandler: requireAuth }, async (request, reply) => {
+    const id = z.string().uuid().safeParse((request.params as { id?: unknown }).id);
+    if (!id.success) return reply.code(400).send({ error: "invalid_id" });
+    const events = await sql`
+      SELECT e.id, e.comment_id, e.media_id, e.sender_id, e.username, e.trigger_type,
+        e.status, e.error_message, e.created_at, e.processed_at, r.id AS rule_id, r.name AS rule_name
+      FROM events e LEFT JOIN rules r ON r.id = e.rule_id WHERE e.id = ${id.data}
+    `;
+    if (!events.length) return reply.code(404).send({ error: "event_not_found" });
+    const jobs = await sql`
+      SELECT id, kind, status, attempts, ambiguous_attempts, last_error, last_error_code,
+        last_error_action, external_id, created_at, updated_at,
+        payload->>'message' AS message, payload->'button' AS button
+      FROM jobs WHERE event_id = ${id.data} ORDER BY created_at ASC
+    `;
+    const links = await sql`
+      SELECT delivered_at, first_clicked_at, click_count FROM link_tracking WHERE event_id = ${id.data}
+    `;
+    const gates = await sql`
+      SELECT status, last_checked_at, completed_at, last_error FROM follow_gate_sessions WHERE event_id = ${id.data}
+    `;
+    const followUps = await sql`
+      SELECT status, scheduled_at, clicked_at, sent_at, last_error FROM follow_up_sessions WHERE event_id = ${id.data}
+    `;
+    return { event: events[0], jobs, link: links[0] ?? null, followGate: gates[0] ?? null, followUp: followUps[0] ?? null };
   });
 
   app.post("/api/queue/pause", { preHandler: requireAuth }, async () => {

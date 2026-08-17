@@ -1,189 +1,147 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import {
+  Activity, ArrowLeft, Camera, Check, ChevronRight, CircleAlert, CirclePlay, Clock3, Copy, ExternalLink,
+  FileText, Gauge, Languages, Layers3, Link2, LockKeyhole, LogOut, Menu, MessageCircle,
+  Moon, MousePointerClick, Pause, Play, Plug, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck,
+  Sun, Trash2, TriangleAlert, X, Zap,
+} from "lucide-react";
 import { api, ApiError } from "./api";
+import { copy, type Language } from "./i18n";
+import type { Dashboard, EventDetails, EventItem, MediaItem, Rule, RuleForm, TriggerType } from "./types";
 
-type Rule = {
-  id: string;
-  name: string;
-  active: boolean;
-  priority: number;
-  trigger_type: "comment" | "direct_message" | "story_reply";
-  target_scope: "all" | "specific";
-  media_id: string | null;
-  match_mode: "any" | "contains" | "exact";
-  keywords: string[];
-  public_reply_enabled: boolean;
-  public_replies: string[];
-  direct_message_enabled: boolean;
-  dm_text: string;
-  button_text: string | null;
-  button_url: string | null;
-  follow_gate_enabled: boolean;
-  follow_gate_prompt: string | null;
-  follow_gate_button_text: string | null;
-  follow_gate_retry_text: string | null;
-  follow_up_enabled: boolean;
-  follow_up_delay_minutes: number;
-  follow_up_text: string | null;
-};
+type Screen = "automations" | "activity" | "connection" | "settings" | "rule";
+type Theme = "light" | "dark";
 
-type Dashboard = {
-  connection: {
-    app_id: string | null;
-    graph_version: string;
-    ig_user_id: string | null;
-    username: string | null;
-    token_expires_at: string | null;
-    connected_at: string | null;
-    outbound_paused: boolean;
-    rate_limited_until: string | null;
-    rate_limit_reason: string | null;
-    last_meta_usage_percent: number | null;
-    last_meta_response_at: string | null;
-    health_state: "healthy" | "degraded" | "rate_limited" | "reauth_required" | "permission_required" | "restricted" | "misconfigured";
-    health_reason: string | null;
-    health_since: string;
-    next_health_probe_at: string | null;
-    token_refresh_error: string | null;
-    token_refresh_failures: number;
-    subscription_healthy: boolean | null;
-    subscription_last_checked_at: string | null;
-    worker_heartbeat_at: string | null;
-    last_webhook_at: string | null;
-    last_webhook_error: string | null;
-    unparsed_webhooks: number;
-    surge_mode: boolean;
-  };
-  rules: Rule[];
-  events: Array<{
-    id: string;
-    username: string | null;
-    status: string;
-    error_message?: string | null;
-    rule_name: string | null;
-    media_id: string;
-    trigger_type: "comment" | "direct_message" | "story_reply";
-    created_at: string;
-  }>;
-  stats: { total_24h: number; sent_24h: number; failed_24h: number };
-  queue: {
-    pending: number;
-    private_pending: number;
-    public_pending: number;
-    retrying: number;
-    uncertain: number;
-    failed: number;
-    expired: number;
-    oldest_seconds: number;
-    throughput_per_minute: number;
-  };
-  urls: { oauthCallback: string; webhook: string; deauthorize: string; dataDeletion: string };
-  metaMode: "mock" | "live";
-};
-
-type MediaItem = { id: string; caption?: string; mediaType?: string; permalink?: string; timestamp?: string };
-
-type FollowCheck = {
-  eventId: string;
-  username: string | null;
-  available: boolean;
-  isUserFollowBusiness?: boolean;
-  reason?: string;
-};
-
-type RuleForm = {
-  name: string;
-  active: boolean;
-  priority: number;
-  triggerType: "comment" | "direct_message" | "story_reply";
-  targetScope: "all" | "specific";
-  mediaId: string;
-  matchMode: "any" | "contains" | "exact";
-  keywords: string;
-  publicReplyEnabled: boolean;
-  publicReplies: string;
-  directMessageEnabled: boolean;
-  dmText: string;
-  buttonText: string;
-  buttonUrl: string;
-  followGateEnabled: boolean;
-  followGatePrompt: string;
-  followGateButtonText: string;
-  followGateRetryText: string;
-  followUpEnabled: boolean;
-  followUpDelayMinutes: number;
-  followUpText: string;
-};
-
-const emptyRule: RuleForm = {
-  name: "Гайд из комментариев",
-  active: true,
-  priority: 100,
-  triggerType: "comment",
-  targetScope: "all",
-  mediaId: "",
-  matchMode: "contains",
-  keywords: "гайд",
-  publicReplyEnabled: true,
-  publicReplies: "Отправили информацию в Direct ✉️\nПроверьте Direct — всё уже там 🙌",
-  directMessageEnabled: true,
-  dmText: "Спасибо за комментарий! Нажмите кнопку ниже, чтобы получить материал.",
-  buttonText: "Получить гайд",
-  buttonUrl: "https://example.com/guide",
-  followGateEnabled: false,
-  followGatePrompt: "Нажмите «Проверить подписку», чтобы получить материал.",
-  followGateButtonText: "Проверить подписку",
-  followGateRetryText: "Пока не вижу подписку. Подпишитесь на аккаунт и нажмите «Проверить подписку» ещё раз.",
-  followUpEnabled: false,
-  followUpDelayMinutes: 60,
+const defaultRule: RuleForm = {
+  name: "Гайд из комментариев", active: true, priority: 100, triggerType: "comment",
+  targetScope: "all", mediaId: "", matchMode: "contains", keywords: "гайд",
+  publicReplyEnabled: true, publicReplies: "Отправили информацию в Direct ✉️\nПроверьте Direct — всё уже там 🙌",
+  directMessageEnabled: true, dmText: "Спасибо за комментарий! Нажмите кнопку ниже, чтобы получить материал.",
+  buttonText: "Получить гайд", buttonUrl: "https://example.com/guide",
+  followGateEnabled: false, followGatePrompt: "Подпишитесь на аккаунт и нажмите кнопку ниже, чтобы получить материал.",
+  followGateButtonText: "Готово", followGateRetryText: "Пока не вижу подписку. Подпишитесь и нажмите «Готово» ещё раз.",
+  followUpEnabled: false, followUpDelayMinutes: 60,
   followUpText: "Не забудьте забрать материал — ссылка всё ещё доступна 👇",
 };
 
-function statusLabel(status: string) {
-  return ({ sent: "Отправлено", queued: "В очереди", processing: "Отправляется", retry_wait: "Ожидает повтора", uncertain: "Проверяется", failed: "Ошибка", skipped_duplicate: "Повтор" } as Record<string, string>)[status] ?? status;
+const navItems: Array<{ id: Exclude<Screen, "rule">; icon: typeof Zap }> = [
+  { id: "automations", icon: Zap }, { id: "activity", icon: Activity },
+  { id: "connection", icon: Plug }, { id: "settings", icon: Settings2 },
+];
+
+function initialLanguage(): Language {
+  const saved = localStorage.getItem("ctd-language");
+  if (saved === "ru" || saved === "en") return saved;
+  return navigator.language.toLowerCase().startsWith("ru") ? "ru" : "en";
 }
 
-function triggerLabel(trigger: Rule["trigger_type"]) {
-  return ({
-    comment: "Комментарий Post/Reel",
-    direct_message: "Входящий Direct",
-    story_reply: "Ответ или реакция на Story",
-  } as const)[trigger];
+function initialTheme(): Theme {
+  const saved = localStorage.getItem("ctd-theme");
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function healthLabel(state?: Dashboard["connection"]["health_state"]) {
-  return ({
-    healthy: "Подключение исправно", degraded: "Временная проблема", rate_limited: "Пауза Meta",
-    reauth_required: "Нужно переподключить Instagram", permission_required: "Не хватает разрешений",
-    restricted: "Аккаунт временно ограничен", misconfigured: "Ошибка конфигурации",
-  } as Record<string, string>)[state ?? "healthy"];
+function ruleToForm(item: Rule): RuleForm {
+  return {
+    name: item.name, active: item.active, priority: item.priority, triggerType: item.trigger_type,
+    targetScope: item.target_scope, mediaId: item.media_id ?? "", matchMode: item.match_mode,
+    keywords: item.keywords.join(", "), publicReplyEnabled: item.public_reply_enabled,
+    publicReplies: item.public_replies.join("\n"), directMessageEnabled: item.direct_message_enabled,
+    dmText: item.dm_text, buttonText: item.button_text ?? "", buttonUrl: item.button_url ?? "",
+    followGateEnabled: item.follow_gate_enabled, followGatePrompt: item.follow_gate_prompt ?? defaultRule.followGatePrompt,
+    followGateButtonText: item.follow_gate_button_text ?? defaultRule.followGateButtonText,
+    followGateRetryText: item.follow_gate_retry_text ?? defaultRule.followGateRetryText,
+    followUpEnabled: item.follow_up_enabled, followUpDelayMinutes: item.follow_up_delay_minutes,
+    followUpText: item.follow_up_text ?? defaultRule.followUpText,
+  };
 }
 
-function duration(seconds: number) {
-  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} сек.`;
-  if (seconds < 3600) return `${Math.ceil(seconds / 60)} мин.`;
-  return `${Math.floor(seconds / 3600)} ч ${Math.ceil((seconds % 3600) / 60)} мин.`;
+function rulePayload(rule: RuleForm) {
+  const directEnabled = rule.triggerType !== "comment" || rule.directMessageEnabled;
+  return {
+    ...rule,
+    targetScope: rule.triggerType === "comment" ? rule.targetScope : "all",
+    mediaId: rule.triggerType === "comment" && rule.targetScope === "specific" ? rule.mediaId : null,
+    keywords: rule.matchMode === "any" ? [] : rule.keywords.split(",").map((word) => word.trim()).filter(Boolean),
+    publicReplyEnabled: rule.triggerType === "comment" && rule.publicReplyEnabled,
+    publicReplies: rule.triggerType === "comment" && rule.publicReplyEnabled
+      ? rule.publicReplies.split("\n").map((value) => value.trim()).filter(Boolean).slice(0, 10) : [],
+    directMessageEnabled: rule.triggerType === "comment" ? rule.directMessageEnabled : true,
+    dmText: directEnabled ? rule.dmText : "", buttonText: directEnabled ? rule.buttonText || null : null,
+    buttonUrl: directEnabled ? rule.buttonUrl || null : null,
+    followGateEnabled: directEnabled && rule.followGateEnabled,
+    followGatePrompt: directEnabled && rule.followGateEnabled ? rule.followGatePrompt : null,
+    followGateButtonText: directEnabled && rule.followGateEnabled ? rule.followGateButtonText : null,
+    followGateRetryText: directEnabled && rule.followGateEnabled ? rule.followGateRetryText : null,
+    followUpEnabled: directEnabled && rule.followUpEnabled,
+    followUpText: directEnabled && rule.followUpEnabled ? rule.followUpText : null,
+  };
+}
+
+function triggerName(trigger: TriggerType, language: Language) {
+  if (trigger === "comment") return copy[language].comment;
+  if (trigger === "direct_message") return copy[language].inboundDirect;
+  return copy[language].storyReply;
+}
+
+function statusName(status: string, language: Language) {
+  const labels = language === "ru"
+    ? { sent: "Отправлено", queued: "В очереди", processing: "Отправляется", retry_wait: "Ожидает повтора", uncertain: "Проверяется", failed: "Ошибка", dead_letter: "Не доставлено", expired: "Истекло", skipped: "Пропущено", skipped_duplicate: "Повтор" }
+    : { sent: "Sent", queued: "Queued", processing: "Sending", retry_wait: "Waiting to retry", uncertain: "Verifying", failed: "Error", dead_letter: "Not delivered", expired: "Expired", skipped: "Skipped", skipped_duplicate: "Duplicate" };
+  return (labels as Record<string, string>)[status] ?? status;
+}
+
+function healthName(state: Dashboard["connection"]["health_state"], language: Language) {
+  const labels = language === "ru"
+    ? { healthy: "Подключение исправно", degraded: "Временная проблема", rate_limited: "Пауза Meta", reauth_required: "Нужно переподключить Instagram", permission_required: "Не хватает разрешений", restricted: "Аккаунт временно ограничен", misconfigured: "Ошибка конфигурации" }
+    : { healthy: "Connection is healthy", degraded: "Temporary issue", rate_limited: "Meta rate limit", reauth_required: "Reconnect Instagram", permission_required: "Permissions required", restricted: "Account is restricted", misconfigured: "Configuration error" };
+  return labels[state];
+}
+
+function formatDate(value: string | null | undefined, language: Language, timeOnly = false) {
+  if (!value) return "—";
+  return new Date(value).toLocaleString(language === "ru" ? "ru-RU" : "en-US", timeOnly
+    ? { hour: "2-digit", minute: "2-digit" }
+    : { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
+  return <button type="button" className={`switch ${checked ? "on" : ""}`} role="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)}><span /></button>;
+}
+
+function Empty({ icon, title, text }: { icon: ReactNode; title: string; text?: string }) {
+  return <div className="empty-state"><span>{icon}</span><strong>{title}</strong>{text && <p>{text}</p>}</div>;
 }
 
 export function App() {
+  const [language, setLanguage] = useState<Language>(initialLanguage);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [screen, setScreen] = useState<Screen>("automations");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(() => new URLSearchParams(window.location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
-  const [showConnection, setShowConnection] = useState(false);
-  const [showRule, setShowRule] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [rule, setRule] = useState<RuleForm>(emptyRule);
+  const [rule, setRule] = useState<RuleForm>(defaultRule);
   const [metaConfig, setMetaConfig] = useState({ appId: "", appSecret: "", graphVersion: "v25.0" });
-  const [mockComment, setMockComment] = useState("гайд");
   const [media, setMedia] = useState<MediaItem[]>([]);
-  const [followCheck, setFollowCheck] = useState<FollowCheck | null>(null);
+  const [mockComment, setMockComment] = useState("гайд");
+  const [eventFilter, setEventFilter] = useState<"all" | "sent" | "failed">("all");
+  const [eventSearch, setEventSearch] = useState("");
+  const [selectedEvent, setSelectedEvent] = useState<EventDetails | null>(null);
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const t = copy[language];
 
   const connected = Boolean(dashboard?.connection.ig_user_id);
-  const activeRules = useMemo(() => dashboard?.rules.filter((item) => item.active).length ?? 0, [dashboard]);
-  const healthState = dashboard?.connection.health_state ?? "healthy";
-  const healthBlocked = ["reauth_required", "permission_required", "restricted", "misconfigured"].includes(healthState);
-  const ruleDirectEnabled = rule.triggerType !== "comment" || rule.directMessageEnabled;
+  const health = dashboard?.connection.health_state ?? "healthy";
+  const healthBlocked = ["reauth_required", "permission_required", "restricted", "misconfigured"].includes(health);
+  const directEnabled = rule.triggerType !== "comment" || rule.directMessageEnabled;
+  const openRate = (dashboard?.analytics.links.delivered_24h ?? 0) > 0
+    ? Math.round(((dashboard?.analytics.links.opened_24h ?? 0) / dashboard!.analytics.links.delivered_24h) * 100) : null;
+
+  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("ctd-theme", theme); }, [theme]);
+  useEffect(() => { document.documentElement.lang = language; localStorage.setItem("ctd-language", language); }, [language]);
 
   async function refresh() {
     const data = await api<Dashboard>("/api/dashboard");
@@ -193,17 +151,10 @@ export function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const oauthError = params.get("error");
-    if (oauthError || params.has("connected")) {
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-
-    api<{ authenticated: boolean }>("/api/session")
-      .then(async (session) => {
-        setAuthenticated(session.authenticated);
-        if (session.authenticated) await refresh();
-      })
-      .catch(() => setAuthenticated(false));
+    if (params.get("error") || params.has("connected")) window.history.replaceState({}, "", window.location.pathname);
+    api<{ authenticated: boolean }>("/api/session").then(async (session) => {
+      setAuthenticated(session.authenticated); if (session.authenticated) await refresh();
+    }).catch(() => setAuthenticated(false));
   }, []);
 
   useEffect(() => {
@@ -213,316 +164,187 @@ export function App() {
   }, [authenticated]);
 
   useEffect(() => {
-    if (!showRule || !connected || media.length) return;
-    api<MediaItem[]>("/api/meta/media").then(setMedia).catch(() => setError("Не удалось загрузить список публикаций Instagram."));
-  }, [showRule, connected, media.length]);
+    if (screen !== "rule" || !connected || media.length) return;
+    api<MediaItem[]>("/api/meta/media").then(setMedia).catch(() => setError(language === "ru" ? "Не удалось загрузить публикации Instagram." : "Could not load Instagram publications."));
+  }, [screen, connected, media.length, language]);
+
+  const hourly = useMemo(() => {
+    const byHour = new Map((dashboard?.analytics.hourly ?? []).map((item) => [new Date(item.hour).getTime(), item.deliveries]));
+    const now = new Date(); now.setMinutes(0, 0, 0);
+    return Array.from({ length: 24 }, (_, index) => {
+      const date = new Date(now.getTime() - (23 - index) * 3_600_000);
+      return { date, value: byHour.get(date.getTime()) ?? 0 };
+    });
+  }, [dashboard?.analytics.hourly]);
+  const maxHourly = Math.max(1, ...hourly.map((item) => item.value));
+
+  const filteredEvents = useMemo(() => (dashboard?.events ?? []).filter((event) => {
+    const statusMatch = eventFilter === "all" || (eventFilter === "sent" ? event.status === "sent" : ["failed", "dead_letter", "expired"].includes(event.status));
+    const search = eventSearch.trim().toLowerCase();
+    return statusMatch && (!search || (event.username ?? "").toLowerCase().includes(search) || (event.rule_name ?? "").toLowerCase().includes(search));
+  }), [dashboard?.events, eventFilter, eventSearch]);
 
   async function login(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError("");
-    try {
-      await api("/api/login", { method: "POST", body: JSON.stringify({ password }) });
-      setAuthenticated(true);
-      await refresh();
-    } catch {
-      setError("Неверный пароль или слишком много попыток.");
-    } finally { setBusy(false); }
+    event.preventDefault(); setBusy(true); setError("");
+    try { await api("/api/login", { method: "POST", body: JSON.stringify({ password }) }); setAuthenticated(true); await refresh(); }
+    catch { setError(language === "ru" ? "Неверный пароль или слишком много попыток." : "Wrong password or too many attempts."); }
+    finally { setBusy(false); }
   }
 
-  async function saveMeta(event: FormEvent) {
+  async function logout() { await api("/api/logout", { method: "POST" }); setAuthenticated(false); setDashboard(null); }
+
+  async function saveRule(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      await api("/api/meta/config", { method: "POST", body: JSON.stringify(metaConfig) });
-      const { url } = await api<{ url: string }>("/api/meta/oauth-url");
-      window.location.assign(url);
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Не удалось сохранить настройки Meta.");
-      setBusy(false);
-    }
+      await api(editingId ? `/api/rules/${editingId}` : "/api/rules", { method: editingId ? "PUT" : "POST", body: JSON.stringify(rulePayload(rule)) });
+      setScreen("automations"); setEditingId(null); setRule(defaultRule); await refresh();
+    } catch (caught) { setError(caught instanceof ApiError ? caught.message : language === "ru" ? "Не удалось сохранить правило." : "Could not save the rule."); }
+    finally { setBusy(false); }
   }
 
-  async function connectExistingConfig() {
-    setBusy(true); setError("");
-    try {
-      const { url } = await api<{ url: string }>("/api/meta/oauth-url");
-      window.location.assign(url);
-    } catch {
-      setError("Сначала сохраните App ID и App Secret."); setBusy(false);
-    }
+  function openRule(item?: Rule) {
+    setEditingId(item?.id ?? null); setRule(item ? ruleToForm(item) : { ...defaultRule }); setScreen("rule"); window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function disconnectInstagram() {
-    if (!window.confirm("Отключить Instagram и удалить токен с этого сервера? Правила и журнал останутся.")) return;
-    await api("/api/meta/connection", { method: "DELETE" });
-    setShowConnection(false);
-    await refresh();
+  async function toggleRule(item: Rule, active: boolean) {
+    try { await api(`/api/rules/${item.id}`, { method: "PUT", body: JSON.stringify(rulePayload({ ...ruleToForm(item), active })) }); await refresh(); }
+    catch { setError(language === "ru" ? "Не удалось изменить правило." : "Could not update the rule."); }
+  }
+
+  async function removeRule(item: Rule) {
+    if (!window.confirm(t.confirmDelete)) return;
+    await api(`/api/rules/${item.id}`, { method: "DELETE" }); await refresh();
   }
 
   async function queueAction(action: "pause" | "resume" | "retry-failed") {
     setBusy(true); setError("");
-    try {
-      await api(`/api/queue/${action}`, { method: "POST" });
-      await refresh();
-    } catch {
-      setError("Не удалось изменить состояние очереди.");
-    } finally { setBusy(false); }
+    try { await api(`/api/queue/${action}`, { method: "POST" }); await refresh(); }
+    catch { setError(language === "ru" ? "Не удалось изменить очередь." : "Could not update the queue."); }
+    finally { setBusy(false); }
   }
 
-  async function checkConnectionHealth() {
-    setBusy(true); setError("");
-    try {
-      await api("/api/meta/health-check", { method: "POST" });
-      await refresh();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Проверка подключения не прошла.");
-      await refresh().catch(() => undefined);
-    } finally { setBusy(false); }
-  }
-
-  async function checkFollowStatus(eventId: string) {
-    setBusy(true); setError(""); setFollowCheck(null);
-    try {
-      const result = await api<Omit<FollowCheck, "eventId">>("/api/meta/follow-status", {
-        method: "POST",
-        body: JSON.stringify({ eventId }),
-      });
-      setFollowCheck({ eventId, ...result });
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Не удалось проверить подписку.");
-    } finally { setBusy(false); }
-  }
-
-  async function saveRule(event: FormEvent) {
+  async function saveMeta(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
-    const payload = {
-      ...rule,
-      targetScope: rule.triggerType === "comment" ? rule.targetScope : "all",
-      mediaId: rule.triggerType === "comment" && rule.targetScope === "specific" ? rule.mediaId : null,
-      keywords: rule.matchMode === "any" ? [] : rule.keywords.split(",").map((word) => word.trim()).filter(Boolean),
-      publicReplyEnabled: rule.triggerType === "comment" && rule.publicReplyEnabled,
-      publicReplies: rule.triggerType === "comment" && rule.publicReplyEnabled ? rule.publicReplies.split("\n").map((text) => text.trim()).filter(Boolean).slice(0, 10) : [],
-      directMessageEnabled: rule.triggerType === "comment" ? rule.directMessageEnabled : true,
-      dmText: ruleDirectEnabled ? rule.dmText : "",
-      buttonText: ruleDirectEnabled ? rule.buttonText || null : null,
-      buttonUrl: ruleDirectEnabled ? rule.buttonUrl || null : null,
-      followGateEnabled: ruleDirectEnabled && rule.followGateEnabled,
-      followGatePrompt: ruleDirectEnabled && rule.followGateEnabled ? rule.followGatePrompt : null,
-      followGateButtonText: ruleDirectEnabled && rule.followGateEnabled ? rule.followGateButtonText : null,
-      followGateRetryText: ruleDirectEnabled && rule.followGateEnabled ? rule.followGateRetryText : null,
-      followUpEnabled: ruleDirectEnabled && rule.followUpEnabled,
-      followUpText: ruleDirectEnabled && rule.followUpEnabled ? rule.followUpText : null,
-    };
-    try {
-      await api(editingId ? `/api/rules/${editingId}` : "/api/rules", {
-        method: editingId ? "PUT" : "POST",
-        body: JSON.stringify(payload),
-      });
-      setShowRule(false); setEditingId(null); setRule(emptyRule);
-      await refresh();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? `Проверьте поля правила: ${caught.message}` : "Не удалось сохранить правило.");
-    } finally { setBusy(false); }
+    try { await api("/api/meta/config", { method: "POST", body: JSON.stringify(metaConfig) }); const { url } = await api<{ url: string }>("/api/meta/oauth-url"); window.location.assign(url); }
+    catch (caught) { setError(caught instanceof ApiError ? caught.message : "Meta configuration failed"); setBusy(false); }
   }
 
-  function editRule(item: Rule) {
-    setEditingId(item.id);
-    setRule({
-      name: item.name, active: item.active, priority: item.priority, triggerType: item.trigger_type, targetScope: item.target_scope,
-      mediaId: item.media_id ?? "", matchMode: item.match_mode, keywords: item.keywords.join(", "),
-      publicReplyEnabled: item.public_reply_enabled, publicReplies: item.public_replies.join("\n"),
-      directMessageEnabled: item.direct_message_enabled,
-      dmText: item.dm_text, buttonText: item.button_text ?? "", buttonUrl: item.button_url ?? "",
-      followGateEnabled: item.follow_gate_enabled, followGatePrompt: item.follow_gate_prompt ?? emptyRule.followGatePrompt,
-      followGateButtonText: item.follow_gate_button_text ?? emptyRule.followGateButtonText,
-      followGateRetryText: item.follow_gate_retry_text ?? emptyRule.followGateRetryText,
-      followUpEnabled: item.follow_up_enabled,
-      followUpDelayMinutes: item.follow_up_delay_minutes,
-      followUpText: item.follow_up_text ?? emptyRule.followUpText,
-    });
-    setShowRule(true);
+  async function connectExisting() {
+    setBusy(true); setError("");
+    try { const { url } = await api<{ url: string }>("/api/meta/oauth-url"); window.location.assign(url); }
+    catch { setError(language === "ru" ? "Сначала сохраните App ID и App Secret." : "Save App ID and App Secret first."); setBusy(false); }
   }
 
-  async function removeRule(id: string) {
-    if (!window.confirm("Удалить это правило? История отправок останется в журнале.")) return;
-    await api(`/api/rules/${id}`, { method: "DELETE" });
-    await refresh();
+  async function disconnect() {
+    if (!window.confirm(t.confirmDisconnect)) return;
+    await api("/api/meta/connection", { method: "DELETE" }); await refresh();
+  }
+
+  async function healthCheck() {
+    setBusy(true); setError("");
+    try { await api("/api/meta/health-check", { method: "POST" }); await refresh(); }
+    catch (caught) { setError(caught instanceof ApiError ? caught.message : "Health check failed"); await refresh().catch(() => undefined); }
+    finally { setBusy(false); }
+  }
+
+  async function openEvent(event: EventItem) {
+    setSelectedEvent(null); setScreen("activity");
+    try { setSelectedEvent(await api<EventDetails>(`/api/events/${event.id}`)); }
+    catch { setError(language === "ru" ? "Не удалось открыть событие." : "Could not load the event."); }
   }
 
   async function simulate() {
     setBusy(true); setError("");
     try {
-      const result = await api<{ result: string }>("/api/mock/comment", {
-        method: "POST",
-        body: JSON.stringify({ text: mockComment, mediaId: "demo-reel-1", username: `demo_${Date.now()}` }),
-      });
-      if (result.result === "no_match") setError("Ни одно активное правило не подошло к комментарию.");
-      await new Promise((resolve) => window.setTimeout(resolve, 1600));
-      await refresh();
+      const result = await api<{ result: string }>("/api/mock/comment", { method: "POST", body: JSON.stringify({ text: mockComment, mediaId: "demo-reel-1", username: `demo_${Date.now()}` }) });
+      if (result.result === "no_match") setError(language === "ru" ? "Ни одно активное правило не подошло." : "No active rule matched.");
+      await new Promise((resolve) => window.setTimeout(resolve, 1200)); await refresh();
     } finally { setBusy(false); }
   }
 
-  if (authenticated === null) return <main className="center"><div className="loader" aria-label="Загрузка" /></main>;
-  if (!authenticated) return (
-    <main className="login-shell">
-      <section className="login-card">
-        <div className="brand-mark">C→D</div>
-        <p className="eyebrow">SELF-HOSTED</p>
-        <h1>Comment to DM</h1>
-        <p className="muted">Автоматические ответы на комментарии Instagram — на вашем сервере и под вашим контролем.</p>
-        <form onSubmit={login}>
-          <label>Пароль администратора<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus autoComplete="current-password" /></label>
-          {error && <p className="error">{error}</p>}
-          <button className="primary full" disabled={busy}>{busy ? "Проверяем…" : "Войти"}</button>
-        </form>
-      </section>
-    </main>
-  );
+  if (authenticated === null) return <main className="loading-screen"><div className="loader" aria-label={t.loading} /></main>;
 
-  return (
-    <div className="app-shell">
-      <header>
-        <div className="brand"><span className="brand-mark small">C→D</span><div><strong>Comment to DM</strong><span>Один аккаунт · ваш сервер</span></div></div>
-        <div className="header-actions"><span className={`connection-dot ${connected ? "online" : ""}`} />{connected ? `@${dashboard?.connection.username ?? "Instagram"}` : "Не подключено"}<button className="ghost" onClick={() => void api("/api/logout", { method: "POST" }).then(() => setAuthenticated(false))}>Выйти</button></div>
-      </header>
+  if (!authenticated) return <main className="login-page">
+    <div className="login-toolbar"><button className="icon-button" onClick={() => setLanguage(language === "ru" ? "en" : "ru")} aria-label="Language"><Languages size={19} /><span>{language.toUpperCase()}</span></button><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Theme">{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></div>
+    <section className="login-card"><div className="logo-mark"><span>C→D</span></div><p className="kicker">COMMENT TO DM · {t.selfHosted.toUpperCase()}</p><h1>{t.loginTitle}</h1><p className="lead">{t.loginText}</p>
+      <div className="trust-row"><span><ShieldCheck />{t.selfHosted}</span><span><LockKeyhole />{t.encrypted}</span><span><Camera />{t.officialApi}</span></div>
+      <form onSubmit={login} className="login-form"><label>{t.password}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus autoComplete="current-password" /></label>{error && <div className="inline-error"><CircleAlert />{error}</div>}<button className="button primary wide" disabled={busy}>{busy ? `${t.login}…` : t.login}<ChevronRight /></button></form>
+    </section>
+  </main>;
 
-      <main className="content">
-        {error && <div className="notice error-notice">{error}<button onClick={() => setError("")}>×</button></div>}
-        <section className="hero-row">
-          <div><p className="eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</p><h1>Автоматизации</h1><p className="muted">Комментарии, входящие Direct и реакции на Stories → автоматический ответ и нужный сценарий.</p></div>
-          <button className="primary" onClick={() => { setEditingId(null); setRule(emptyRule); setShowRule(true); }}>+ Создать правило</button>
-        </section>
+  function navigate(next: Exclude<Screen, "rule">) { setScreen(next); setSelectedEvent(null); setMobileMenu(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
 
-        <section className="stats">
-          <article><span>За 24 часа</span><strong>{dashboard?.stats.total_24h ?? 0}</strong></article>
-          <article><span>Отправлено</span><strong>{dashboard?.stats.sent_24h ?? 0}</strong></article>
-          <article><span>Активных правил</span><strong>{activeRules}</strong></article>
-          <article className={(dashboard?.stats.failed_24h ?? 0) > 0 ? "danger" : ""}><span>Ошибок</span><strong>{dashboard?.stats.failed_24h ?? 0}</strong></article>
-        </section>
+  return <div className="app-shell">
+    <header className="topbar"><button className="mobile-menu-button" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Menu"><Menu /></button><button className="brand-button" onClick={() => navigate("automations")}><span className="logo-mark small"><span>C→D</span></span><strong>Comment to DM</strong></button>
+      <nav className={mobileMenu ? "open" : ""}>{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} onClick={() => navigate(id)}><Icon />{t[id]}</button>)}</nav>
+      <div className="account-menu"><span className={`live-dot ${connected ? "online" : ""}`} /><span>{connected ? `@${dashboard?.connection.username ?? "Instagram"}` : t.disconnected}</span><button onClick={() => void logout()} aria-label={t.logout}><LogOut /></button></div></header>
+    {error && <div className="global-notice"><CircleAlert /><span>{error}</span><button onClick={() => setError("")}><X /></button></div>}
+    <main className="page-shell">{screen === "automations" && <DashboardView />}{screen === "activity" && <ActivityView />}{screen === "connection" && <ConnectionView />}{screen === "settings" && <SettingsView />}{screen === "rule" && <RuleEditor />}</main>
+    {screen !== "rule" && <nav className="bottom-nav">{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} onClick={() => navigate(id)}><Icon /><span>{t[id]}</span></button>)}</nav>}
+  </div>;
 
-        <section className="connection-card">
-          <div><span className={`connection-dot ${connected ? "online" : ""}`} /><div><strong>{connected ? `Instagram подключён: @${dashboard?.connection.username ?? "account"}` : "Подключите Instagram"}</strong><p>{connected ? "Webhook и очередь готовы принимать комментарии и сообщения." : "Нужны App ID и App Secret вашего Meta-приложения."}</p></div></div>
-          <button className="secondary" onClick={() => connected ? setShowConnection(true) : setShowConnection(!showConnection)}>{connected ? "Настройки" : "Подключить"}</button>
-        </section>
+  function PageTitle({ title, eyebrow, subtitle, action }: { title: string; eyebrow?: string; subtitle?: string; action?: ReactNode }) {
+    return <div className="page-title"><div><p className="kicker">{eyebrow ?? `${t.today} · ${new Date().toLocaleDateString(language === "ru" ? "ru-RU" : "en-US", { day: "numeric", month: "long" })}`}</p><h1>{title}</h1>{subtitle && <p className="page-subtitle">{subtitle}</p>}</div>{action}</div>;
+  }
 
-        <section className="panel queue-panel">
-          <div className="panel-title">
-            <div><h2>Очередь доставки</h2><p>Direct отправляется первым. При ограничениях Meta очередь остановится автоматически и ничего не потеряет.</p></div>
-            <span className={`queue-state ${dashboard?.connection.outbound_paused || healthBlocked ? "paused" : healthState !== "healthy" || dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() ? "limited" : "ready"}`}>
-              {dashboard?.connection.outbound_paused
-                ? "Пауза"
-                : healthState !== "healthy" ? healthLabel(healthState)
-                  : dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date()
-                    ? "Пауза Meta"
-                  : (dashboard?.queue.pending ?? 0) > 0 ? "Отправляется" : "Готова"}
-            </span>
-          </div>
-          <div className="queue-grid">
-            <div><span>Всего в очереди</span><strong>{dashboard?.queue.pending ?? 0}</strong></div>
-            <div><span>Direct</span><strong>{dashboard?.queue.private_pending ?? 0}</strong></div>
-            <div><span>Ответы на комментарии</span><strong>{dashboard?.queue.public_pending ?? 0}</strong></div>
-            <div><span>Скорость API</span><strong>{(dashboard?.queue.throughput_per_minute ?? 0).toFixed(1)} / мин</strong></div>
-          </div>
-          {(dashboard?.queue.pending ?? 0) > 0 && <div className="queue-details">
-            <span>Самое старое задание: {duration(dashboard?.queue.oldest_seconds ?? 0)}</span>
-            <span>Оценка завершения: {(dashboard?.queue.throughput_per_minute ?? 0) > 0 ? duration(((dashboard?.queue.pending ?? 0) / dashboard!.queue.throughput_per_minute) * 60) : "собираем данные"}</span>
-            {(dashboard?.queue.retrying ?? 0) > 0 && <span>Ожидают повтора: {dashboard?.queue.retrying}</span>}
-            {(dashboard?.queue.uncertain ?? 0) > 0 && <span>Проверяем результат: {dashboard?.queue.uncertain}</span>}
-          </div>}
-          {healthState !== "healthy" && <div className={`queue-warning ${healthBlocked ? "critical" : ""}`}>
-            <strong>{healthLabel(healthState)}</strong>
-            <span>{dashboard?.connection.health_reason ?? "Приложение выполнит безопасную повторную проверку автоматически."}</span>
-          </div>}
-          {dashboard?.connection.surge_mode && <div className="queue-warning surge">
-            Режим всплеска: временно отправляем только Direct, чтобы не приблизиться к семидневному дедлайну.
-          </div>}
-          {dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() && <div className="queue-warning">
-            Meta временно ограничила скорость. Продолжим после {new Date(dashboard.connection.rate_limited_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.
-          </div>}
-          <div className="queue-actions">
-            <button className="secondary" disabled={busy} onClick={() => void queueAction(dashboard?.connection.outbound_paused ? "resume" : "pause")}>
-              {dashboard?.connection.outbound_paused ? "Продолжить отправку" : "Поставить на паузу"}
-            </button>
-            {(dashboard?.queue.failed ?? 0) > 0 && <button className="ghost" disabled={busy} onClick={() => void queueAction("retry-failed")}>Повторить ошибки ({dashboard?.queue.failed})</button>}
-            {connected && <button className="ghost" disabled={busy} onClick={() => void checkConnectionHealth()}>Проверить подключение</button>}
-            {healthState === "reauth_required" && <button className="ghost" disabled={busy} onClick={() => setShowConnection(true)}>Переподключить</button>}
-            {dashboard?.connection.last_meta_usage_percent != null && <span className="meta-usage">Нагрузка Meta: {dashboard.connection.last_meta_usage_percent}%</span>}
-          </div>
-        </section>
+  function DashboardView() {
+    const queueState = dashboard?.connection.outbound_paused || healthBlocked ? "paused" : (dashboard?.queue.pending ?? 0) > 0 ? "running" : "idle";
+    return <><PageTitle title={t.dashboardTitle} action={<button className="button primary" onClick={() => openRule()}><Plus />{t.createRule}</button>} />
+      <section className="dashboard-grid"><article className="card delivery-card"><div className="delivery-head"><div><strong className="hero-number">{dashboard?.stats.deliveries_24h ?? 0}</strong><span>{t.deliveries24}</span></div><span className={`state-badge ${queueState}`}><span />{queueState === "paused" ? t.queuePaused : t.queueRunning}</span></div><p className="card-explainer">{language === "ru" ? "Ответы на комментарии и сообщения проходят через надёжную очередь и переживают перезапуск сервера." : "Comment replies and messages use a durable queue and survive server restarts."}</p><div className="hourly-chart" aria-label="24 hour delivery chart">{hourly.map((item, index) => <div className="bar-slot" key={item.date.toISOString()} title={`${formatDate(item.date.toISOString(), language, true)} · ${item.value}`}><span style={{ height: `${Math.max(item.value ? 8 : 2, (item.value / maxHourly) * 100)}%` }} /><small>{index % 4 === 0 || index === 23 ? item.date.getHours().toString().padStart(2, "0") : ""}</small></div>)}</div></article>
+        <article className="card queue-card"><Metric icon={<Layers3 />} label={t.queue} value={dashboard?.queue.pending ?? 0} /><Metric icon={<Gauge />} label={t.apiSpeed} value={`${(dashboard?.queue.throughput_per_minute ?? 0).toFixed(1)}/min`} /><Metric icon={<MousePointerClick />} label={t.openedLink} value={openRate == null ? "—" : `${openRate}%`} tone="success" /><Metric icon={<TriangleAlert />} label={t.errors} value={dashboard?.stats.failed_24h ?? 0} tone={(dashboard?.stats.failed_24h ?? 0) ? "danger" : undefined} /><div className="queue-actions"><button className="button secondary" disabled={busy} onClick={() => void queueAction(dashboard?.connection.outbound_paused ? "resume" : "pause")}>{dashboard?.connection.outbound_paused ? <Play /> : <Pause />}{dashboard?.connection.outbound_paused ? t.resume : t.pause}</button><button className="button secondary" disabled={busy} onClick={() => void healthCheck()}><RefreshCw />{t.check}</button></div></article></section>
+      {(health !== "healthy" || dashboard?.connection.surge_mode || (dashboard?.queue.failed ?? 0) > 0) && <section className={`health-banner ${healthBlocked ? "critical" : ""}`}><TriangleAlert /><div><strong>{healthName(health, language)}</strong><p>{dashboard?.connection.health_reason ?? (language === "ru" ? "Приложение продолжит работу автоматически после безопасной паузы." : "The app will resume automatically after a safe pause.")}</p></div>{(dashboard?.queue.failed ?? 0) > 0 && <button className="button secondary" onClick={() => void queueAction("retry-failed")}>{t.retryErrors} ({dashboard?.queue.failed})</button>}</section>}
+      <section className="content-columns"><div><div className="section-heading"><p className="kicker">{t.rules} — {dashboard?.rules.length ?? 0}</p><span>{t.firstMatches}</span></div><div className="rule-table">{!dashboard?.rules.length ? <Empty icon={<Zap />} title={t.noRules} text={language === "ru" ? "Создайте правило и выберите, отвечать ли в комментарии, Direct или оба канала." : "Create a rule and choose comment replies, Direct, or both."} /> : dashboard.rules.map((item) => <RuleRow key={item.id} item={item} />)}</div></div>
+        <div><div className="section-heading"><p className="kicker">{language === "ru" ? "Лента событий" : "Recent activity"}</p><button onClick={() => navigate("activity")}>{language === "ru" ? "Весь журнал" : "View all"}<ChevronRight /></button></div><div className="activity-feed">{!dashboard?.events.length ? <Empty icon={<Activity />} title={t.noEvents} /> : dashboard.events.slice(0, 6).map((event) => <EventRow key={event.id} event={event} compact />)}</div></div></section>
+      {dashboard?.metaMode === "mock" && <section className="card mock-card"><div><p className="kicker">{t.mockTest}</p><strong>{language === "ru" ? "Проверьте правило без запросов к Meta" : "Test a rule without calling Meta"}</strong></div><input value={mockComment} onChange={(event) => setMockComment(event.target.value)} /><button className="button secondary" disabled={busy || !dashboard.rules.length} onClick={() => void simulate()}><CirclePlay />{t.runTest}</button></section>}
+    </>;
+  }
 
-        {showConnection && <section className="panel form-panel">
-          <div className="panel-title"><div><h2>Подключение Meta</h2><p>Ключи сохраняются зашифрованными только на этом сервере.</p></div><button className="icon-button" onClick={() => setShowConnection(false)}>×</button></div>
-          <form onSubmit={saveMeta} className="grid-form">
-            <label>App ID<input value={metaConfig.appId} onChange={(event) => setMetaConfig({ ...metaConfig, appId: event.target.value })} placeholder="123456789012345" /></label>
-            <label>App Secret<input type="password" value={metaConfig.appSecret} onChange={(event) => setMetaConfig({ ...metaConfig, appSecret: event.target.value })} placeholder={dashboard?.connection.app_id ? "Введите заново, чтобы изменить" : "Meta App Secret"} /></label>
-            <label>Graph API<select value={metaConfig.graphVersion} onChange={(event) => setMetaConfig({ ...metaConfig, graphVersion: event.target.value })}><option>v25.0</option><option>v24.0</option></select></label>
-            <div className="url-list"><span>OAuth callback</span><code>{dashboard?.urls.oauthCallback}</code><span>Webhook</span><code>{dashboard?.urls.webhook}</code></div>
-            <div className="form-actions"><button className="primary" disabled={busy}>Сохранить и подключить</button>{dashboard?.connection.app_id && <button type="button" className="secondary" onClick={connectExistingConfig}>Повторить OAuth</button>}{connected && <button type="button" className="ghost danger-text" onClick={() => void disconnectInstagram()}>Отключить Instagram</button>}</div>
-          </form>
-        </section>}
+  function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; value: ReactNode; tone?: string }) { return <div className={`metric ${tone ?? ""}`}><span>{icon}{label}</span><strong>{value}</strong></div>; }
 
-        <section className="panel">
-          <div className="panel-title"><div><h2>Правила</h2><p>Сработает первое подходящее правило с меньшим приоритетом.</p></div></div>
-          {!dashboard?.rules.length ? <div className="empty"><strong>Правил пока нет</strong><p>Создайте первое правило для слова «гайд».</p></div> : <div className="rule-list">
-            {dashboard.rules.map((item) => <article className="rule-card" key={item.id}>
-              <div className={`rule-icon ${item.active ? "active" : ""}`}>{item.active ? "ON" : "OFF"}</div>
-              <div className="rule-main"><div><strong>{item.name}</strong><span className="pill">{triggerLabel(item.trigger_type)}</span>{item.trigger_type === "comment" && <span className="pill">{item.target_scope === "all" ? "Все Post/Reel" : item.media_id}</span>}{item.trigger_type === "comment" && !item.direct_message_enabled && <span className="pill">Без Direct</span>}{item.follow_gate_enabled && <span className="pill">Проверка подписки</span>}{item.follow_up_enabled && <span className="pill">Follow-up через {duration(item.follow_up_delay_minutes * 60)}</span>}</div><p>{item.match_mode === "any" ? item.trigger_type === "comment" ? "Любой комментарий" : "Любое сообщение или реакция" : `Ключи: ${item.keywords.join(", ")}`}</p><small>{item.direct_message_enabled ? `${item.follow_gate_enabled ? "После подписки" : "Direct"}: ${item.dm_text}` : `Ответ на комментарий: ${item.public_replies[0] ?? "настроен"}`}</small></div>
-              <div className="row-actions"><button className="ghost" onClick={() => editRule(item)}>Изменить</button><button className="ghost danger-text" onClick={() => void removeRule(item.id)}>Удалить</button></div>
-            </article>)}
-          </div>}
-        </section>
+  function RuleRow({ item }: { item: Rule }) {
+    const analytics = item.analytics ?? { triggered_24h: 0, direct_24h: 0, opened_24h: 0, failed_24h: 0 };
+    return <article className="rule-row"><button className="rule-description" onClick={() => openRule(item)}><span className="rule-name-line"><strong>{item.name}</strong><em><MessageCircle />{triggerName(item.trigger_type, language)}</em></span><span className="keyword-line">{item.match_mode === "any" ? t.any : item.keywords.map((word) => <code key={word}>{word}</code>)}<small>{item.direct_message_enabled ? (item.follow_gate_enabled ? (language === "ru" ? "материал после подписки" : "material after follow") : item.button_url ? (language === "ru" ? "материал по кнопке" : "button delivery") : t.direct) : t.commentReply}</small></span></button><div className="rule-funnel"><MetricTiny value={analytics.triggered_24h} label={t.triggered} /><MetricTiny value={analytics.direct_24h} label={t.direct} /><MetricTiny value={analytics.opened_24h} label={t.opened} /></div><div className="rule-controls"><Toggle checked={item.active} onChange={(active) => void toggleRule(item, active)} label={t.active} /><button className="row-icon" onClick={() => openRule(item)} aria-label={t.edit}><Settings2 /></button><button className="row-icon danger" onClick={() => void removeRule(item)} aria-label={t.remove}><Trash2 /></button></div></article>;
+  }
 
-        {dashboard?.metaMode === "mock" && <section className="panel test-panel"><div><h2>Тестовый комментарий</h2><p>Проверяет правила и очередь без запросов в Instagram.</p></div><input value={mockComment} onChange={(event) => setMockComment(event.target.value)} /><button className="secondary" disabled={busy || !dashboard.rules.length} onClick={() => void simulate()}>Запустить тест</button></section>}
+  function MetricTiny({ value, label }: { value: number; label: string }) { return <span><strong>{value}</strong><small>{label}</small></span>; }
 
-        <section className="panel">
-          <div className="panel-title"><div><h2>Последние события</h2><p>Журнал хранится 30 дней. Тексты комментариев и входящих сообщений не сохраняются.</p></div></div>
-          {!dashboard?.events.length ? <div className="empty compact">Здесь появятся отправки и ошибки.</div> : <div className="events">
-            {dashboard.events.map((event) => <div className="event" key={event.id}>
-              <span className={`status ${event.status}`}>{statusLabel(event.status)}</span>
-              <strong>@{event.username ?? "unknown"}</strong>
-              <span>{triggerLabel(event.trigger_type)} · {event.rule_name ?? "Удалённое правило"}</span>
-              <time>{new Date(event.created_at).toLocaleString("ru-RU")}</time>
-              <button className="ghost follow-check-button" disabled={busy || !connected} onClick={() => void checkFollowStatus(event.id)}>Проверить подписку</button>
-              {followCheck?.eventId === event.id && <small className={`follow-result ${followCheck.available && followCheck.isUserFollowBusiness ? "following" : "not-following"}`}>
-                {followCheck.available
-                  ? followCheck.isUserFollowBusiness ? "Подписка подтверждена" : "Пользователь не подписан"
-                  : `Meta не разрешила проверку: ${followCheck.reason ?? "нет согласия на доступ к профилю"}`}
-              </small>}
-            </div>)}
-          </div>}
-        </section>
-      </main>
+  function EventRow({ event, compact = false }: { event: EventItem; compact?: boolean }) {
+    const failed = ["failed", "dead_letter", "expired"].includes(event.status); const waiting = ["queued", "processing", "retry_wait", "uncertain"].includes(event.status);
+    return <button className={`event-row ${failed ? "failed" : waiting ? "waiting" : ""}`} onClick={() => void openEvent(event)}><span className="event-status-icon">{failed ? <X /> : waiting ? <Clock3 /> : <Check />}</span><span className="event-copy"><strong>@{event.username ?? "unknown"}</strong><small>{event.rule_name ?? (language === "ru" ? "Удалённое правило" : "Deleted rule")} · {triggerName(event.trigger_type, language)}</small></span><time>{formatDate(event.created_at, language, compact)}</time><ChevronRight /></button>;
+  }
 
-      {showRule && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="rule-title">
-        <div className="panel-title"><div><p className="eyebrow">АВТОМАТИЗАЦИЯ</p><h2 id="rule-title">{editingId ? "Изменить правило" : "Новое правило"}</h2></div><button className="icon-button" onClick={() => setShowRule(false)}>×</button></div>
-        <form onSubmit={saveRule} className="rule-form">
-          <label>Название<input value={rule.name} onChange={(event) => setRule({ ...rule, name: event.target.value })} /></label>
-          <label>Что запускает правило<select value={rule.triggerType} onChange={(event) => {
-            const triggerType = event.target.value as RuleForm["triggerType"];
-            setRule({ ...rule, triggerType, targetScope: "all", publicReplyEnabled: triggerType === "comment" ? rule.publicReplyEnabled : false, directMessageEnabled: triggerType === "comment" ? rule.directMessageEnabled : true, followUpEnabled: triggerType === "comment" && !rule.followGateEnabled ? false : rule.followUpEnabled });
-          }}><option value="comment">Комментарий под Post или Reel</option><option value="direct_message">Входящее сообщение в Direct</option><option value="story_reply">Ответ или реакция на Story</option></select></label>
-          <div className="two-cols">{rule.triggerType === "comment" && <label>Публикации<select value={rule.targetScope} onChange={(event) => setRule({ ...rule, targetScope: event.target.value as RuleForm["targetScope"] })}><option value="all">Все Post и Reel</option><option value="specific">Конкретный Post/Reel</option></select></label>}<label>Совпадение<select value={rule.matchMode} onChange={(event) => setRule({ ...rule, matchMode: event.target.value as RuleForm["matchMode"] })}><option value="contains">Содержит слово</option><option value="exact">Точное совпадение</option><option value="any">{rule.triggerType === "comment" ? "Любой комментарий" : rule.triggerType === "story_reply" ? "Любой ответ или реакция" : "Любое сообщение"}</option></select></label></div>
-          {rule.triggerType === "comment" && rule.targetScope === "specific" && <label>Post или Reel<select value={rule.mediaId} onChange={(event) => setRule({ ...rule, mediaId: event.target.value })}><option value="">Выберите публикацию</option>{media.map((item) => <option value={item.id} key={item.id}>{`${item.mediaType === "VIDEO" ? "Reel" : "Post"} · ${(item.caption || "Без подписи").slice(0, 70)}`}</option>)}</select>{!connected && <span>Сначала подключите Instagram.</span>}</label>}
-          {rule.matchMode !== "any" && <label>Ключевые слова <span>через запятую</span><input value={rule.keywords} onChange={(event) => setRule({ ...rule, keywords: event.target.value })} /></label>}
-          {rule.triggerType === "comment" && <label className="check"><input type="checkbox" checked={rule.publicReplyEnabled} onChange={(event) => setRule({ ...rule, publicReplyEnabled: event.target.checked })} />Отвечать на комментарий</label>}
-          {rule.triggerType === "comment" && rule.publicReplyEnabled && <label>Варианты ответа на комментарий <span>каждый с новой строки, максимум 10</span><textarea rows={5} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}
-          {rule.triggerType === "comment" && <label className="check"><input type="checkbox" checked={rule.directMessageEnabled} onChange={(event) => setRule({ ...rule, directMessageEnabled: event.target.checked, followGateEnabled: event.target.checked && rule.followGateEnabled, followUpEnabled: event.target.checked && rule.followUpEnabled })} />Отправлять сообщение в Direct</label>}
-          {ruleDirectEnabled && <label className="check"><input type="checkbox" checked={rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followGateEnabled: event.target.checked, followUpEnabled: !event.target.checked && rule.triggerType === "comment" ? false : rule.followUpEnabled })} />Выдать материал только после проверки подписки</label>}
-          {ruleDirectEnabled && rule.followGateEnabled && <>
-            <label>Первое сообщение в Direct<textarea rows={3} value={rule.followGatePrompt} onChange={(event) => setRule({ ...rule, followGatePrompt: event.target.value })} /></label>
-            <label>Текст кнопки проверки <span>до 20 символов</span><input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label>
-            <label>Если пользователь ещё не подписан<textarea rows={3} value={rule.followGateRetryText} onChange={(event) => setRule({ ...rule, followGateRetryText: event.target.value })} /></label>
-          </>}
-          {ruleDirectEnabled && <>
-            <label>{rule.followGateEnabled ? "Сообщение после подтверждения подписки" : "Сообщение в Direct"}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>
-            <div className="two-cols"><label>Текст кнопки материала<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>HTTPS-ссылка на материал<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div>
-            <label className="check"><input type="checkbox" checked={rule.followUpEnabled} disabled={rule.triggerType === "comment" && !rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followUpEnabled: event.target.checked })} />Напомнить, если пользователь не открыл материал</label>
-            {rule.triggerType === "comment" && !rule.followGateEnabled && <p className="muted">Для комментария follow-up доступен вместе с проверкой подписки: нажатие postback-кнопки открывает разрешённое Meta окно сообщений.</p>}
-            {rule.followUpEnabled && <><label>Через сколько минут <span>не более 22 часов</span><input type="number" min={1} max={1320} value={rule.followUpDelayMinutes} onChange={(event) => setRule({ ...rule, followUpDelayMinutes: Number(event.target.value) })} /></label><label>Текст напоминания<textarea rows={3} value={rule.followUpText} onChange={(event) => setRule({ ...rule, followUpText: event.target.value })} /></label><p className="muted">Ссылка будет отслеживаться только вашим сервером. Если материал уже открыт, напоминание автоматически отменится.</p></>}
-          </>}
-          <label className="check"><input type="checkbox" checked={rule.active} onChange={(event) => setRule({ ...rule, active: event.target.checked })} />Правило активно</label>
-          <div className="form-actions end"><button type="button" className="secondary" onClick={() => setShowRule(false)}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить правило"}</button></div>
-        </form>
-      </section></div>}
-    </div>
-  );
+  function ActivityView() {
+    return <><PageTitle title={t.activityTitle} eyebrow={t.activity} subtitle={t.activitySubtitle} /><section className={`activity-layout ${selectedEvent ? "has-detail" : ""}`}><div className="card activity-list-card"><div className="activity-tools"><label><Search /><input placeholder={t.search} value={eventSearch} onChange={(event) => setEventSearch(event.target.value)} /></label><div className="segmented"><button className={eventFilter === "all" ? "active" : ""} onClick={() => setEventFilter("all")}>{t.all}</button><button className={eventFilter === "sent" ? "active" : ""} onClick={() => setEventFilter("sent")}>{t.sent}</button><button className={eventFilter === "failed" ? "active" : ""} onClick={() => setEventFilter("failed")}>{t.failed}</button></div></div><div className="event-list">{filteredEvents.length ? filteredEvents.map((event) => <EventRow key={event.id} event={event} />) : <Empty icon={<Activity />} title={t.noEvents} />}</div></div><aside className={`card event-detail ${selectedEvent ? "open" : ""}`}>{selectedEvent ? <EventDetailView details={selectedEvent} /> : <Empty icon={<FileText />} title={t.eventDetails} text={language === "ru" ? "Выберите событие слева." : "Select an event on the left."} />}</aside></section></>;
+  }
+
+  function EventDetailView({ details }: { details: EventDetails }) {
+    return <><div className="detail-head"><button className="mobile-detail-back" onClick={() => setSelectedEvent(null)}><ArrowLeft />{t.back}</button><div><span className={`status-pill ${details.event.status}`}>{statusName(details.event.status, language)}</span><h2>@{details.event.username ?? "unknown"}</h2><p>{details.event.rule_name ?? "—"} · {formatDate(details.event.created_at, language)}</p></div><button className="row-icon" onClick={() => setSelectedEvent(null)} aria-label="Close"><X /></button></div><div className="privacy-callout"><ShieldCheck /><span>{t.privacyNote}</span></div><div className="detail-timeline"><div className="timeline-item incoming"><span><Camera /></span><div><strong>{triggerName(details.event.trigger_type, language)}</strong><p>{language === "ru" ? "Получено и сопоставлено с правилом" : "Received and matched to a rule"}</p></div></div>{details.jobs.map((job) => <div className={`timeline-item ${job.status}`} key={job.id}><span>{job.kind === "public_reply" ? <MessageCircle /> : job.kind === "follow_check" ? <ShieldCheck /> : <Send />}</span><div><strong>{job.kind === "public_reply" ? t.commentReply : job.kind === "follow_check" ? (language === "ru" ? "Проверка подписки" : "Follow check") : job.kind === "follow_up" ? "Follow-up" : t.directMessage}</strong>{job.message && <p>{job.message}</p>}{job.button && <em><Link2 />{job.button.title}</em>}<small>{statusName(job.status, language)} · {t.attempts}: {job.attempts} · {formatDate(job.updated_at, language)}</small>{job.last_error && <div className="job-error"><TriangleAlert />{job.last_error}</div>}</div></div>)}</div>{details.link && <div className="link-result"><MousePointerClick /><div><strong>{details.link.first_clicked_at ? t.materialOpened : (language === "ru" ? "Ссылка доставлена" : "Link delivered")}</strong><p>{details.link.first_clicked_at ? formatDate(details.link.first_clicked_at, language) : formatDate(details.link.delivered_at, language)} · {language === "ru" ? "кликов" : "clicks"}: {details.link.click_count}</p></div></div>}{details.followGate && <div className="detail-meta"><span>{language === "ru" ? "Проверка подписки" : "Follow verification"}</span><strong>{details.followGate.status}</strong></div>}{details.followUp && <div className="detail-meta"><span>Follow-up</span><strong>{details.followUp.status}</strong></div>}</>;
+  }
+
+  function ConnectionView() {
+    const workerRecent = dashboard?.connection.worker_heartbeat_at && Date.now() - new Date(dashboard.connection.worker_heartbeat_at).getTime() < 120_000;
+    const checks = [{ label: t.token, ok: connected }, { label: t.subscription, ok: dashboard?.connection.subscription_healthy === true }, { label: t.recentWebhook, ok: Boolean(dashboard?.connection.last_webhook_at), optional: true }, { label: t.worker, ok: Boolean(workerRecent) }];
+    return <><PageTitle title={t.connectTitle} eyebrow="INSTAGRAM API" subtitle={t.connectSubtitle} action={connected ? <span className="connection-chip"><span />@{dashboard?.connection.username}</span> : undefined} /><section className="connection-layout"><form className="card connection-form" onSubmit={saveMeta}><div className="section-heading"><div><p className="kicker">META FOR DEVELOPERS</p><h2>{language === "ru" ? "Данные приложения" : "Application credentials"}</h2></div><ShieldCheck /></div><label>{t.appId}<input value={metaConfig.appId} onChange={(event) => setMetaConfig({ ...metaConfig, appId: event.target.value })} placeholder="123456789012345" /></label><div className="form-two"><label>{t.appSecret}<input type="password" value={metaConfig.appSecret} onChange={(event) => setMetaConfig({ ...metaConfig, appSecret: event.target.value })} placeholder={dashboard?.connection.app_id ? "••••••••••••••••" : "Meta App Secret"} /></label><label>{t.graphVersion}<select value={metaConfig.graphVersion} onChange={(event) => setMetaConfig({ ...metaConfig, graphVersion: event.target.value })}><option>v25.0</option><option>v24.0</option></select></label></div><div className="endpoint-list"><Endpoint label={t.callback} value={dashboard?.urls.oauthCallback ?? ""} /><Endpoint label={t.webhook} value={dashboard?.urls.webhook ?? ""} /></div><div className="form-actions"><button className="button primary" disabled={busy}>{t.saveConnect}</button>{dashboard?.connection.app_id && <button type="button" className="button secondary" onClick={() => void connectExisting()}>{t.repeatOauth}</button>}{connected && <button type="button" className="button text danger" onClick={() => void disconnect()}>{t.disconnect}</button>}</div></form>
+        <aside className="card readiness-card"><div className="section-heading"><div><p className="kicker">{t.readiness}</p><h2>{healthName(health, language)}</h2></div><span className={`health-orb ${health}`}><Activity /></span></div><div className="check-list">{checks.map((item) => <div key={item.label}><span className={item.ok ? "ok" : item.optional ? "neutral" : "bad"}>{item.ok ? <Check /> : item.optional ? <Clock3 /> : <X />}</span><span>{item.label}<small>{item.ok ? t.ready : item.optional ? (language === "ru" ? "Появится после первого события" : "Appears after first event") : t.needsAttention}</small></span></div>)}</div>{dashboard?.connection.last_webhook_error && <div className="job-error"><TriangleAlert />{dashboard.connection.last_webhook_error}</div>}<button className="button secondary wide" disabled={busy || !connected} onClick={() => void healthCheck()}><RefreshCw />{t.check}</button></aside></section></>;
+  }
+
+  function Endpoint({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><code>{value}</code><button type="button" aria-label="Copy" onClick={() => void navigator.clipboard.writeText(value)}><Copy /></button></div>; }
+
+  function SettingsView() {
+    return <><PageTitle title={t.settingsTitle} /><section className="settings-grid"><article className="card setting-card"><div className="setting-icon"><Sun /></div><div><h2>{t.appearance}</h2><p>{language === "ru" ? "Тема сохраняется только в этом браузере." : "Theme is saved in this browser."}</p><div className="choice-cards"><button className={theme === "light" ? "active" : ""} onClick={() => setTheme("light")}><Sun />{t.light}<Check /></button><button className={theme === "dark" ? "active" : ""} onClick={() => setTheme("dark")}><Moon />{t.dark}<Check /></button></div></div></article><article className="card setting-card"><div className="setting-icon"><Languages /></div><div><h2>{t.language}</h2><p>{language === "ru" ? "Язык интерфейса не меняет тексты ваших правил." : "Interface language does not change your rule copy."}</p><div className="choice-cards"><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}><span>RU</span>Русский<Check /></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><span>EN</span>English<Check /></button></div></div></article><article className="card setting-card privacy-setting"><div className="setting-icon"><ShieldCheck /></div><div><h2>{t.data}</h2><p>{t.dataText}</p><a className="button secondary" href="/privacy" target="_blank" rel="noreferrer">{t.privacyPolicy}<ExternalLink /></a></div></article></section></>;
+  }
+
+  function RuleEditor() {
+    return <><PageTitle title={editingId ? t.editRule : t.newRule} eyebrow={t.automations} action={<button className="button secondary" onClick={() => setScreen("automations")}><ArrowLeft />{t.back}</button>} /><form className="rule-editor-layout" onSubmit={saveRule}><div className="rule-editor-fields"><section className="card form-section"><div className="form-section-title"><span>01</span><div><h2>{language === "ru" ? "Основа правила" : "Rule basics"}</h2><p>{language === "ru" ? "Выберите событие и условия срабатывания." : "Choose the event and matching conditions."}</p></div></div><div className="form-two"><label>{t.ruleName}<input value={rule.name} onChange={(event) => setRule({ ...rule, name: event.target.value })} /></label><label>{t.priority}<input type="number" min={1} max={10000} value={rule.priority} onChange={(event) => setRule({ ...rule, priority: Number(event.target.value) })} /></label></div><div className="trigger-cards">{(["comment", "direct_message", "story_reply"] as TriggerType[]).map((value) => <button type="button" key={value} className={rule.triggerType === value ? "active" : ""} onClick={() => setRule({ ...rule, triggerType: value, targetScope: "all", publicReplyEnabled: value === "comment" ? rule.publicReplyEnabled : false, directMessageEnabled: value === "comment" ? rule.directMessageEnabled : true, followUpEnabled: value === "comment" && !rule.followGateEnabled ? false : rule.followUpEnabled })}>{value === "comment" ? <MessageCircle /> : value === "direct_message" ? <Send /> : <CirclePlay />}<span>{triggerName(value, language)}</span><Check /></button>)}</div><div className="form-two">{rule.triggerType === "comment" && <label>{t.publication}<select value={rule.targetScope} onChange={(event) => setRule({ ...rule, targetScope: event.target.value as RuleForm["targetScope"] })}><option value="all">{t.allMedia}</option><option value="specific">{t.specificMedia}</option></select></label>}<label>{t.match}<select value={rule.matchMode} onChange={(event) => setRule({ ...rule, matchMode: event.target.value as RuleForm["matchMode"] })}><option value="contains">{t.contains}</option><option value="exact">{t.exact}</option><option value="any">{t.any}</option></select></label></div>{rule.triggerType === "comment" && rule.targetScope === "specific" && <label>{t.publication}<select value={rule.mediaId} onChange={(event) => setRule({ ...rule, mediaId: event.target.value })}><option value="">{t.selectMedia}</option>{media.map((item) => <option key={item.id} value={item.id}>{`${item.mediaType === "VIDEO" ? "Reel" : "Post"} · ${(item.caption || item.id).slice(0, 80)}`}</option>)}</select></label>}{rule.matchMode !== "any" && <label>{t.keywords}<small>{t.commaSeparated}</small><input value={rule.keywords} onChange={(event) => setRule({ ...rule, keywords: event.target.value })} /></label>}</section>
+        {rule.triggerType === "comment" && <section className="card form-section"><div className="form-section-title"><span>02</span><div><h2>{language === "ru" ? "Действия" : "Actions"}</h2><p>{language === "ru" ? "Публичный ответ и Direct включаются независимо." : "Public reply and Direct can be enabled independently."}</p></div></div><SettingToggle title={t.commentReply} text={t.commentReplyHint} checked={rule.publicReplyEnabled} onChange={(checked) => setRule({ ...rule, publicReplyEnabled: checked })} />{rule.publicReplyEnabled && <label>{t.variants}<small>{t.onePerLine}</small><textarea rows={4} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}<SettingToggle title={t.sendDirect} text={t.directHint} checked={rule.directMessageEnabled} onChange={(checked) => setRule({ ...rule, directMessageEnabled: checked, followGateEnabled: checked && rule.followGateEnabled, followUpEnabled: checked && rule.followUpEnabled })} /></section>}
+        {directEnabled && <section className="card form-section"><div className="form-section-title"><span>{rule.triggerType === "comment" ? "03" : "02"}</span><div><h2>{t.directMessage}</h2><p>{language === "ru" ? "Сообщение, кнопка материала и необязательные условия." : "Message, material button, and optional conditions."}</p></div></div><SettingToggle title={t.followGate} text={language === "ru" ? "Пользователь добровольно нажимает кнопку, после чего Meta разрешает проверку." : "The user voluntarily taps a button before Meta allows the check."} checked={rule.followGateEnabled} onChange={(checked) => setRule({ ...rule, followGateEnabled: checked, followUpEnabled: !checked && rule.triggerType === "comment" ? false : rule.followUpEnabled })} />{rule.followGateEnabled && <><label>{t.firstDirect}<textarea rows={3} value={rule.followGatePrompt} onChange={(event) => setRule({ ...rule, followGatePrompt: event.target.value })} /></label><div className="form-two"><label>{t.checkButton}<input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label><label>{t.notFollowing}<textarea rows={3} value={rule.followGateRetryText} onChange={(event) => setRule({ ...rule, followGateRetryText: event.target.value })} /></label></div></>}<label>{rule.followGateEnabled ? t.finalMessage : t.directMessage}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label><div className="form-two"><label>{t.buttonText}<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>{t.buttonUrl}<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div><SettingToggle title={t.followUp} text={rule.triggerType === "comment" && !rule.followGateEnabled ? (language === "ru" ? "Для комментария доступно после добровольной кнопки проверки подписки." : "For comment triggers, this is available after the voluntary follow-check button.") : (language === "ru" ? "Отменяется автоматически после клика." : "Cancelled automatically after the click.")} checked={rule.followUpEnabled} disabled={rule.triggerType === "comment" && !rule.followGateEnabled} onChange={(checked) => setRule({ ...rule, followUpEnabled: checked })} />{rule.followUpEnabled && <div className="form-two"><label>{t.delay}<input type="number" min={1} max={1320} value={rule.followUpDelayMinutes} onChange={(event) => setRule({ ...rule, followUpDelayMinutes: Number(event.target.value) })} /></label><label>{t.followUpText}<textarea rows={3} value={rule.followUpText} onChange={(event) => setRule({ ...rule, followUpText: event.target.value })} /></label></div>}</section>}
+        <section className="card form-footer"><SettingToggle title={t.active} text={language === "ru" ? "Неактивное правило сохраняется, но не запускается." : "An inactive rule is saved but never triggered."} checked={rule.active} onChange={(checked) => setRule({ ...rule, active: checked })} /><div><button type="button" className="button secondary" onClick={() => setScreen("automations")}>{t.cancel}</button><button className="button primary" disabled={busy}>{busy ? `${t.save}…` : t.save}</button></div></section></div><aside className="preview-column"><p className="kicker">{t.preview}</p><InstagramPreview /></aside></form></>;
+  }
+
+  function SettingToggle({ title, text, checked, onChange, disabled = false }: { title: string; text: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) { return <div className={`setting-toggle ${disabled ? "disabled" : ""}`}><div><strong>{title}</strong><p>{text}</p></div><Toggle checked={checked} onChange={(value) => !disabled && onChange(value)} label={title} /></div>; }
+
+  function InstagramPreview() {
+    const reply = rule.publicReplies.split("\n").find(Boolean) ?? t.commentReply; const message = rule.followGateEnabled ? rule.followGatePrompt : rule.dmText;
+    return <div className="phone-preview"><div className="phone-top"><ArrowLeft /><span className="avatar">IG</span><div><strong>{dashboard?.connection.username ?? "your_account"}</strong><small>{language === "ru" ? "Бизнес-чат" : "Business chat"}</small></div><Camera /></div><div className="phone-body">{rule.triggerType === "comment" && rule.publicReplyEnabled && <div className="preview-context"><MessageCircle /><span>{language === "ru" ? "Ответ под комментарием" : "Reply under comment"}: “{reply}”</span></div>}{directEnabled ? <><div className="ig-system">{dashboard?.connection.username ?? "your_account"} {language === "ru" ? "ответил(-а) на ваш комментарий" : "replied to your comment"}</div><div className="ig-bubble">{message || t.directMessage}{rule.followGateEnabled ? <button type="button">{rule.followGateButtonText || t.check}</button> : rule.buttonText && rule.buttonUrl ? <button type="button">{rule.buttonText}</button> : null}</div>{rule.followGateEnabled && <><div className="ig-user-bubble">{rule.followGateButtonText || t.check}</div><div className="ig-bubble">{rule.dmText || t.finalMessage}{rule.buttonText && rule.buttonUrl && <button type="button">{rule.buttonText}</button>}</div></>}</> : <div className="preview-only-comment"><MessageCircle /><strong>{language === "ru" ? "Только публичный ответ" : "Public reply only"}</strong><p>{reply}</p></div>}</div><div className="phone-input">{language === "ru" ? "Напишите сообщение…" : "Message…"}<Plus /></div></div>;
+  }
 }

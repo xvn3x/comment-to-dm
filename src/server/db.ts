@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS events_recent_idx ON events (created_at DESC);
 CREATE INDEX IF NOT EXISTS events_dedupe_idx ON events (sender_id, media_id, rule_id, status);
+CREATE INDEX IF NOT EXISTS events_rule_recent_idx ON events (rule_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id UUID PRIMARY KEY,
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_queue_idx ON jobs (status, next_attempt_at, created_at);
+CREATE INDEX IF NOT EXISTS jobs_event_idx ON jobs (event_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_initial_kind_unique_idx
   ON jobs (event_id, kind) WHERE kind IN ('public_reply', 'private_reply');
 
@@ -161,6 +163,20 @@ CREATE TABLE IF NOT EXISTS follow_up_sessions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS link_tracking (
+  event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+  tracking_token UUID NOT NULL UNIQUE,
+  destination_url TEXT NOT NULL,
+  delivered_at TIMESTAMPTZ,
+  first_clicked_at TIMESTAMPTZ,
+  click_count INTEGER NOT NULL DEFAULT 0 CHECK (click_count >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS link_tracking_delivered_idx ON link_tracking (delivered_at DESC);
+CREATE INDEX IF NOT EXISTS link_tracking_clicked_idx ON link_tracking (first_clicked_at DESC);
 `;
 
 const migrations = [
@@ -297,6 +313,38 @@ const migrations = [
     version: 7,
     sql: `
       ALTER TABLE rules ADD COLUMN IF NOT EXISTS direct_message_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+    `,
+  },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE IF NOT EXISTS link_tracking (
+        event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+        tracking_token UUID NOT NULL UNIQUE,
+        destination_url TEXT NOT NULL,
+        delivered_at TIMESTAMPTZ,
+        first_clicked_at TIMESTAMPTZ,
+        click_count INTEGER NOT NULL DEFAULT 0 CHECK (click_count >= 0),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS link_tracking_delivered_idx ON link_tracking (delivered_at DESC);
+      CREATE INDEX IF NOT EXISTS link_tracking_clicked_idx ON link_tracking (first_clicked_at DESC);
+      CREATE INDEX IF NOT EXISTS events_rule_recent_idx ON events (rule_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS jobs_event_idx ON jobs (event_id, created_at);
+
+      INSERT INTO link_tracking (
+        event_id, tracking_token, destination_url, delivered_at, first_clicked_at, click_count
+      )
+      SELECT
+        f.event_id, f.tracking_token, f.destination_url,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM jobs j WHERE j.event_id = f.event_id AND j.status = 'sent'
+        ) THEN f.created_at ELSE NULL END,
+        f.clicked_at,
+        CASE WHEN f.clicked_at IS NULL THEN 0 ELSE 1 END
+      FROM follow_up_sessions f
+      ON CONFLICT (event_id) DO NOTHING;
     `,
   },
 ];

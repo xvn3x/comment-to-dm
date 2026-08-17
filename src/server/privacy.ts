@@ -42,13 +42,13 @@ export function privacyPolicyHtml(): string {
       <li>comment, media and sender identifiers, and the commenter's public username;</li>
       <li>incoming Direct message and Story identifiers needed to prevent duplicate processing;</li>
       <li>quick-reply interaction identifiers and follower status when a rule requires a voluntary subscription check;</li>
-      <li>whether a configured tracked material link was opened, when follow-up reminders are enabled;</li>
+      <li>whether and how many times a configured material link was opened;</li>
       <li>automation rules, delivery status and timestamps.</li>
     </ul>
-    <p>Comment and incoming message text is evaluated in memory to match a rule and is not stored in the event journal. Link tracking stores only the random automation event identifier and opening time; it does not use cookies or third-party analytics. The application never asks for or stores an Instagram password.</p>
+    <p>Comment and incoming message text is evaluated in memory to match a rule and is not stored in the event journal. Link tracking stores the random automation event identifier, configured destination URL, delivery and first-opening times, and click count; it does not use cookies or third-party analytics. The application never asks for or stores an Instagram password.</p>
 
     <h2>3. How data is used</h2>
-    <p>Data is used only to authenticate the connected account, receive Instagram webhook events, match comments and incoming messages against rules, optionally verify a subscription after the user taps a button, send configured public replies and private messages, cancel an enabled reminder after its material link is opened, prevent duplicate processing, display delivery history, and maintain security.</p>
+    <p>Data is used only to authenticate the connected account, receive Instagram webhook events, match comments and incoming messages against rules, optionally verify a subscription after the user taps a button, send configured public replies and private messages, measure configured material-link delivery and opening, cancel an enabled reminder after its material link is opened, prevent duplicate processing, display delivery history, and maintain security.</p>
 
     <h2>4. Storage and sharing</h2>
     <p>Data is stored in the database selected by the installation operator. Access tokens and Meta application secrets are encrypted at rest by the application. Data is sent to Meta only as needed to use the Instagram API and may be processed by the hosting and database providers selected by the operator. The application does not sell personal data or use it for advertising.</p>

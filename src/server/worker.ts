@@ -97,6 +97,15 @@ function jobExpired(job: Job): boolean {
   return job.created_at.getTime() < Date.now() - 7 * 86_400_000;
 }
 
+function trackingTokenFromUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value).pathname.match(/^\/r\/([0-9a-f-]{36})$/i)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
 function stateForDecision(decision: RetryDecision): HealthState | undefined {
   if (decision.action === "rate_limit") return "rate_limited";
   if (decision.action === "pause_auth") return "reauth_required";
@@ -160,6 +169,13 @@ export function startWorker(sql: Db, config: AppConfig, meta: MetaClient, box: S
           last_error_code = NULL, last_error_action = NULL, dispatch_started_at = NULL, updated_at = NOW()
         WHERE id = ${job.id}
       `;
+      const trackingToken = trackingTokenFromUrl(job.payload.button?.url);
+      if (trackingToken) {
+        await tx`
+          UPDATE link_tracking SET delivered_at = COALESCE(delivered_at, NOW()), updated_at = NOW()
+          WHERE tracking_token = ${trackingToken}
+        `;
+      }
       await tx`
         UPDATE meta_connection SET
           last_meta_usage_percent = ${usagePercent ?? 0}, last_meta_response_at = NOW(),

@@ -123,6 +123,9 @@ try {
   assert.equal(dashboard.body.connection.username, "demo_account");
   assert.equal(dashboard.body.events[0].status, "sent");
   assert.equal(dashboard.body.stats.sent_24h, 1);
+  assert.equal(dashboard.body.stats.deliveries_24h, 2);
+  assert.ok(Array.isArray(dashboard.body.analytics.hourly));
+  assert.equal(dashboard.body.rules.find((rule) => rule.id === created.body.id).analytics.triggered_24h, 1);
   const follow = await request("/api/meta/follow-status", {
     method: "POST", headers: auth,
     body: JSON.stringify({ eventId: dashboard.body.events[0].id }),
@@ -133,6 +136,18 @@ try {
   const delivered = await sql`SELECT kind, attempts FROM jobs ORDER BY kind`;
   assert.equal(delivered.length, 2);
   assert.ok(delivered.every((job) => job.attempts === 1), "Leader lease must prevent duplicate dispatch attempts");
+  const [guideTracking] = await sql`
+    SELECT tracking_token, delivered_at, first_clicked_at FROM link_tracking
+    WHERE event_id = ${dashboard.body.events[0].id}
+  `;
+  assert.ok(guideTracking.delivered_at, "Tracked material link must be marked delivered");
+  assert.equal(guideTracking.first_clicked_at, null);
+  const guideClick = await fetch(`${base}/r/${guideTracking.tracking_token}`, { redirect: "manual" });
+  assert.equal(guideClick.status, 302);
+  assert.equal(guideClick.headers.get("location"), "https://example.com/guide");
+  const [clickedGuide] = await sql`SELECT first_clicked_at, click_count FROM link_tracking WHERE tracking_token = ${guideTracking.tracking_token}`;
+  assert.ok(clickedGuide.first_clicked_at);
+  assert.equal(clickedGuide.click_count, 1);
 
   const emptyActionRule = await request("/api/rules", {
     method: "POST", headers: auth,
@@ -170,6 +185,8 @@ try {
   assert.equal(publicOnlyEvent.status, "sent");
   const publicOnlyJobs = await sql`SELECT kind FROM jobs WHERE event_id = ${publicOnlyEvent.id}`;
   assert.deepEqual(publicOnlyJobs.map((job) => job.kind), ["public_reply"]);
+  const publicOnlyTracking = await sql`SELECT event_id FROM link_tracking WHERE event_id = ${publicOnlyEvent.id}`;
+  assert.equal(publicOnlyTracking.length, 0);
 
   const directRule = await request("/api/rules", {
     method: "POST", headers: auth,

@@ -30,7 +30,7 @@ export async function enqueueComment(
   if (!rule) return "no_match";
 
   const eventId = randomUUID();
-  const trackingToken = rule.direct_message_enabled && rule.follow_up_enabled && rule.follow_gate_enabled
+  const trackingToken = rule.direct_message_enabled && rule.button_url && rule.button_text
     ? randomUUID()
     : undefined;
   const finalButtonUrl = trackingToken
@@ -73,7 +73,13 @@ export async function enqueueComment(
         VALUES (${randomUUID()}, ${eventId}, 'public_reply', ${tx.json({ commentId: comment.commentId, message: publicMessage })})
       `;
     }
-    if (rule.direct_message_enabled && trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
+    if (trackingToken && rule.button_url) {
+      await tx`
+        INSERT INTO link_tracking (event_id, tracking_token, destination_url)
+        VALUES (${eventId}, ${trackingToken}, ${rule.button_url})
+      `;
+    }
+    if (rule.direct_message_enabled && rule.follow_up_enabled && trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
       await tx`
         INSERT INTO follow_up_sessions (
           event_id, tracking_token, destination_url, material_button_text,
@@ -103,8 +109,8 @@ export async function enqueueComment(
           ${tx.json({
             commentId: comment.commentId,
             message: rule.follow_gate_enabled ? rule.follow_gate_prompt : rule.dm_text,
-            button: !rule.follow_gate_enabled && rule.button_text && rule.button_url
-              ? { title: rule.button_text, url: rule.button_url } : undefined,
+            button: !rule.follow_gate_enabled && rule.button_text && finalButtonUrl
+              ? { title: rule.button_text, url: finalButtonUrl } : undefined,
             quickReply: rule.follow_gate_enabled
               ? { title: rule.follow_gate_button_text, payload: `follow_gate:${eventId}` } : undefined,
             followGate: rule.follow_gate_enabled,
@@ -131,7 +137,7 @@ export async function enqueueInboundMessage(
   if (!rule) return "no_match";
 
   const eventId = randomUUID();
-  const trackingToken = rule.follow_up_enabled ? randomUUID() : undefined;
+  const trackingToken = rule.button_url && rule.button_text ? randomUUID() : undefined;
   const materialButtonUrl = trackingToken
     ? trackedMaterialUrl(options.publicBaseUrl, trackingToken)
     : rule.button_url;
@@ -146,7 +152,13 @@ export async function enqueueInboundMessage(
     `;
     if (!inserted.length) return "duplicate" as const;
 
-    if (trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
+    if (trackingToken && rule.button_url) {
+      await tx`
+        INSERT INTO link_tracking (event_id, tracking_token, destination_url)
+        VALUES (${eventId}, ${trackingToken}, ${rule.button_url})
+      `;
+    }
+    if (rule.follow_up_enabled && trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
       await tx`
         INSERT INTO follow_up_sessions (
           event_id, scoped_user_id, tracking_token, destination_url, material_button_text,
