@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MetaApiError } from "../src/server/meta.js";
+import { MetaAmbiguousError, MetaApiError, MetaTransportError } from "../src/server/meta.js";
 import { adaptiveIntervalMs, isRateLimitError, retryDecision, withJitter } from "../src/server/rate-control.js";
 
 test("recognizes Meta rate-limit HTTP statuses and Graph error codes", () => {
@@ -10,17 +10,28 @@ test("recognizes Meta rate-limit HTTP statuses and Graph error codes", () => {
 });
 
 test("honors Retry-After and does not treat rate limits as permanent failures", () => {
-  const decision = retryDecision(new MetaApiError("limited", 429, 4, false, 180), 20, 3);
-  assert.deepEqual(decision, { retryable: true, rateLimited: true, delaySeconds: 180 });
+  const decision = retryDecision(new MetaApiError("limited", 429, 4, undefined, false, 180), 20, 3);
+  assert.deepEqual(decision, { action: "rate_limit", retryable: true, rateLimited: true, delaySeconds: 180, errorCode: "4" });
 });
 
 test("backs off transient failures and rejects permanent API errors", () => {
   assert.deepEqual(retryDecision(new MetaApiError("temporary", 503), 4), {
-    retryable: true, rateLimited: false, delaySeconds: 16,
+    action: "retry", retryable: true, rateLimited: false, delaySeconds: 16, errorCode: "http:503",
   });
   assert.deepEqual(retryDecision(new MetaApiError("permission", 400, 10), 1), {
-    retryable: false, rateLimited: false, delaySeconds: 0,
+    action: "pause_permission", retryable: true, rateLimited: false, delaySeconds: 900, errorCode: "10",
   });
+});
+
+test("separates safe network retries from ambiguous writes", () => {
+  assert.equal(retryDecision(new MetaTransportError("dns", false, "ENOTFOUND"), 1).action, "retry");
+  assert.equal(retryDecision(new MetaTransportError("socket closed", true, "ECONNRESET"), 1).action, "uncertain");
+  assert.equal(retryDecision(new MetaAmbiguousError("missing response id"), 1).action, "uncertain");
+});
+
+test("pauses the account instead of consuming every queued job on auth errors", () => {
+  assert.equal(retryDecision(new MetaApiError("expired", 400, 190), 1).action, "pause_auth");
+  assert.equal(retryDecision(new MetaApiError("restricted", 400, 368), 1).action, "pause_restricted");
 });
 
 test("slows the worker as Meta usage approaches its dynamic ceiling", () => {

@@ -12,6 +12,7 @@ import type { AppConfig } from "./config.js";
 import type { Db } from "./db.js";
 import { enqueueComment, extractComments } from "./automation.js";
 import { MetaClient } from "./meta.js";
+import { retryDecision } from "./rate-control.js";
 import { privacyPolicyHtml } from "./privacy.js";
 import {
   SecretBox,
@@ -53,6 +54,14 @@ const ruleSchema = z.object({
   if (Boolean(value.buttonText) !== Boolean(value.buttonUrl)) {
     context.addIssue({ code: "custom", path: ["buttonText"], message: "Button text and URL must be provided together" });
   }
+  if (Buffer.byteLength(value.dmText, "utf8") > 1000) {
+    context.addIssue({ code: "custom", path: ["dmText"], message: "Direct message exceeds 1000 UTF-8 bytes" });
+  }
+  value.publicReplies.forEach((text, index) => {
+    if (Buffer.byteLength(text, "utf8") > 1000) {
+      context.addIssue({ code: "custom", path: ["publicReplies", index], message: "Public reply exceeds 1000 UTF-8 bytes" });
+    }
+  });
 });
 
 function toRuleValues(value: z.infer<typeof ruleSchema>) {
@@ -91,7 +100,26 @@ export async function buildApp(sql: Db, config: AppConfig) {
     }
   };
 
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async (_request, reply) => {
+    try {
+      await sql`SELECT 1`;
+      return { ok: true };
+    } catch {
+      return reply.code(503).send({ ok: false, database: false });
+    }
+  });
+  app.get("/ready", async (_request, reply) => {
+    try {
+      const rows = await sql<{ worker_ready: boolean }[]>`
+        SELECT COALESCE(worker_heartbeat_at > NOW() - INTERVAL '90 seconds', FALSE) AS worker_ready
+        FROM meta_connection WHERE singleton = TRUE
+      `;
+      const ready = Boolean(rows[0]?.worker_ready);
+      return reply.code(ready ? 200 : 503).send({ ok: ready, database: true, worker: ready });
+    } catch {
+      return reply.code(503).send({ ok: false, database: false, worker: false });
+    }
+  });
   const sendPrivacyPolicy = async (_request: FastifyRequest, reply: FastifyReply) => reply
     .header("Cache-Control", "public, max-age=3600")
     .type("text/html; charset=utf-8")
@@ -127,7 +155,10 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const connectionRows = await sql`
       SELECT app_id, graph_version, ig_user_id, username, token_expires_at, connected_at,
              outbound_paused, rate_limited_until, rate_limit_reason,
-             last_meta_usage_percent, last_meta_response_at
+             last_meta_usage_percent, last_meta_response_at, health_state, health_reason, health_since,
+             next_health_probe_at, token_refresh_error, token_refresh_failures, subscription_healthy,
+             subscription_last_checked_at, worker_heartbeat_at, last_webhook_at, last_webhook_error,
+             unparsed_webhooks, surge_mode
       FROM meta_connection WHERE singleton = TRUE
     `;
     const rules = await sql`SELECT * FROM rules ORDER BY priority ASC, created_at DESC`;
@@ -146,13 +177,14 @@ export async function buildApp(sql: Db, config: AppConfig) {
     `;
     const queue = await sql`
       SELECT
-        COUNT(*) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait'))::int AS pending,
-        COUNT(*) FILTER (WHERE kind = 'private_reply' AND status IN ('queued', 'processing', 'retry_wait'))::int AS private_pending,
-        COUNT(*) FILTER (WHERE kind = 'public_reply' AND status IN ('queued', 'processing', 'retry_wait'))::int AS public_pending,
+        COUNT(*) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS pending,
+        COUNT(*) FILTER (WHERE kind = 'private_reply' AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS private_pending,
+        COUNT(*) FILTER (WHERE kind = 'public_reply' AND status IN ('queued', 'processing', 'retry_wait', 'uncertain'))::int AS public_pending,
         COUNT(*) FILTER (WHERE status = 'retry_wait')::int AS retrying,
+        COUNT(*) FILTER (WHERE status = 'uncertain')::int AS uncertain,
         COUNT(*) FILTER (WHERE status IN ('failed', 'dead_letter'))::int AS failed,
         COUNT(*) FILTER (WHERE status = 'expired')::int AS expired,
-        COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait'))))::int, 0) AS oldest_seconds,
+        COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status IN ('queued', 'processing', 'retry_wait', 'uncertain'))))::int, 0) AS oldest_seconds,
         (COUNT(*) FILTER (WHERE status = 'sent' AND updated_at >= NOW() - INTERVAL '5 minutes')::float / 5)::float AS throughput_per_minute
       FROM jobs
     `;
@@ -209,7 +241,8 @@ export async function buildApp(sql: Db, config: AppConfig) {
       UPDATE meta_connection SET
         app_id = ${parsed.data.appId}, app_secret_enc = ${box.seal(parsed.data.appSecret)},
         graph_version = ${parsed.data.graphVersion}, ig_user_id = NULL, username = NULL,
-        token_enc = NULL, token_expires_at = NULL, connected_at = NULL, updated_at = NOW()
+        token_enc = NULL, token_expires_at = NULL, connected_at = NULL,
+        health_state = 'healthy', health_reason = NULL, subscription_healthy = NULL, updated_at = NOW()
       WHERE singleton = TRUE
     `;
     return { ok: true };
@@ -264,7 +297,10 @@ export async function buildApp(sql: Db, config: AppConfig) {
         UPDATE meta_connection SET ig_user_id = ${profile.id}, username = ${profile.username ?? null},
           token_enc = ${box.seal(token.accessToken)},
           token_expires_at = ${token.expiresIn ? sql`NOW() + (${token.expiresIn} * INTERVAL '1 second')` : null},
-          connected_at = NOW(), updated_at = NOW()
+          connected_at = NOW(), health_state = 'healthy', health_reason = NULL, health_since = NOW(),
+          next_health_probe_at = NULL, token_refresh_error = NULL, token_refresh_failures = 0,
+          subscription_healthy = TRUE, subscription_last_checked_at = NOW(),
+          rate_limited_until = NULL, rate_limit_reason = NULL, consecutive_api_failures = 0, updated_at = NOW()
         WHERE singleton = TRUE
       `;
       return reply.redirect("/?connected=1");
@@ -277,10 +313,49 @@ export async function buildApp(sql: Db, config: AppConfig) {
   app.delete("/api/meta/connection", { preHandler: requireAuth }, async () => {
     await sql`
       UPDATE meta_connection SET ig_user_id = NULL, username = NULL, token_enc = NULL,
-        token_expires_at = NULL, connected_at = NULL, updated_at = NOW()
+        token_expires_at = NULL, connected_at = NULL, health_state = 'healthy', health_reason = NULL,
+        subscription_healthy = NULL, updated_at = NOW()
       WHERE singleton = TRUE
     `;
     return { ok: true };
+  });
+
+  app.post("/api/meta/health-check", { preHandler: requireAuth }, async (_request, reply) => {
+    const rows = await sql<{ ig_user_id: string | null; token_enc: string | null; graph_version: string }[]>`
+      SELECT ig_user_id, token_enc, graph_version FROM meta_connection WHERE singleton = TRUE
+    `;
+    const connection = rows[0];
+    if (!connection?.ig_user_id || !connection.token_enc) return reply.code(409).send({ error: "instagram_not_connected" });
+    try {
+      const context = { igUserId: connection.ig_user_id, token: box.open(connection.token_enc), graphVersion: connection.graph_version };
+      const profile = await meta.profile(context);
+      let fields = await meta.subscribedFields(context);
+      if (!fields.includes("comments")) {
+        await meta.subscribeToComments(context);
+        fields = await meta.subscribedFields(context);
+      }
+      if (!fields.includes("comments")) throw new Error("comments webhook subscription is missing");
+      await sql`
+        UPDATE meta_connection SET username = ${profile.username ?? null}, health_state = 'healthy',
+          health_reason = NULL, health_since = NOW(), next_health_probe_at = NULL,
+          subscription_healthy = TRUE, subscription_last_checked_at = NOW(),
+          consecutive_api_failures = 0, rate_limited_until = NULL, rate_limit_reason = NULL, updated_at = NOW()
+        WHERE singleton = TRUE
+      `;
+      return { ok: true, username: profile.username, subscribedFields: fields };
+    } catch (error) {
+      const decision = retryDecision(error, 1);
+      const state = decision.action === "pause_auth" ? "reauth_required"
+        : decision.action === "pause_permission" ? "permission_required"
+          : decision.action === "pause_restricted" ? "restricted" : "degraded";
+      const message = error instanceof Error ? error.message.slice(0, 1000) : "Connection check failed";
+      await sql`
+        UPDATE meta_connection SET health_state = ${state}, health_reason = ${message}, health_since = NOW(),
+          subscription_healthy = CASE WHEN ${state === "permission_required"} THEN FALSE ELSE subscription_healthy END,
+          updated_at = NOW() WHERE singleton = TRUE
+      `;
+      return reply.code(409).send({ error: "meta_health_check_failed", state, message });
+    }
   });
 
   app.get("/api/meta/media", { preHandler: requireAuth }, async (_request, reply) => {
@@ -368,8 +443,8 @@ export async function buildApp(sql: Db, config: AppConfig) {
 
   app.post("/webhooks/instagram", { config: { rawBody: true } }, async (request, reply) => {
     if (config.META_MODE === "live") {
-      const rows = await sql<{ app_secret_enc: string | null }[]>`
-        SELECT app_secret_enc FROM meta_connection WHERE singleton = TRUE
+      const rows = await sql<{ app_secret_enc: string | null; ig_user_id: string | null }[]>`
+        SELECT app_secret_enc, ig_user_id FROM meta_connection WHERE singleton = TRUE
       `;
       if (!rows[0]?.app_secret_enc) return reply.code(503).send({ error: "meta_not_configured" });
       const valid = verifyMetaSignature(
@@ -379,7 +454,23 @@ export async function buildApp(sql: Db, config: AppConfig) {
       );
       if (!valid) return reply.code(401).send({ error: "invalid_signature" });
     }
-    const comments = extractComments(request.body);
+    const connectionRows = await sql<{ ig_user_id: string | null }[]>`
+      SELECT ig_user_id FROM meta_connection WHERE singleton = TRUE
+    `;
+    const connectedId = connectionRows[0]?.ig_user_id;
+    const comments = extractComments(request.body).map((comment) => ({
+      ...comment,
+      isSelf: comment.isSelf || Boolean(connectedId && comment.senderId === connectedId),
+    }));
+    const hasInstagramEntries = Boolean(request.body && typeof request.body === "object"
+      && Array.isArray((request.body as { entry?: unknown }).entry)
+      && (request.body as { entry: unknown[] }).entry.length);
+    await sql`
+      UPDATE meta_connection SET last_webhook_at = NOW(),
+        last_webhook_error = ${hasInstagramEntries && comments.length === 0 ? "Instagram webhook contained no recognized comment events." : null},
+        unparsed_webhooks = unparsed_webhooks + ${hasInstagramEntries && comments.length === 0 ? 1 : 0}, updated_at = NOW()
+      WHERE singleton = TRUE
+    `;
     for (let index = 0; index < comments.length; index += 20) {
       await Promise.all(comments.slice(index, index + 20).map((comment) => enqueueComment(sql, comment)));
     }
@@ -399,7 +490,8 @@ export async function buildApp(sql: Db, config: AppConfig) {
   app.post("/api/meta/deauthorize", { preHandler: verifySignedCallback }, async () => {
     await sql`
       UPDATE meta_connection SET ig_user_id = NULL, username = NULL, token_enc = NULL,
-        token_expires_at = NULL, connected_at = NULL, updated_at = NOW() WHERE singleton = TRUE
+        token_expires_at = NULL, connected_at = NULL, health_state = 'reauth_required',
+        health_reason = 'Instagram deauthorized the application.', health_since = NOW(), updated_at = NOW() WHERE singleton = TRUE
     `;
     return { ok: true };
   });

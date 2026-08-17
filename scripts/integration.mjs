@@ -29,14 +29,19 @@ await sql`
 `;
 
 const { app, meta, box } = await buildApp(sql, config);
-const stopWorker = startWorker(sql, config, meta, box);
+const stopWorkers = [
+  startWorker(sql, config, meta, box),
+  startWorker(sql, config, meta, box),
+];
 await app.listen({ host: config.HOST, port: config.PORT });
 const base = config.PUBLIC_BASE_URL;
 
 async function request(path, init = {}) {
+  const headers = { ...(init.headers || {}) };
+  if (init.body) headers["Content-Type"] = "application/json";
   const response = await fetch(`${base}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+    headers,
   });
   const body = await response.json().catch(() => ({}));
   return { response, body };
@@ -63,6 +68,10 @@ try {
   const callback = await fetch(oauth.body.url, { redirect: "manual" });
   assert.equal(callback.status, 302);
 
+  const health = await request("/api/meta/health-check", { method: "POST", headers: auth });
+  assert.equal(health.response.status, 200);
+  assert.ok(health.body.subscribedFields.includes("comments"));
+
   const created = await request("/api/rules", {
     method: "POST", headers: auth,
     body: JSON.stringify({
@@ -82,6 +91,17 @@ try {
   });
   assert.equal(created.response.status, 201);
 
+  const selfWebhook = await request("/webhooks/instagram", {
+    method: "POST",
+    body: JSON.stringify({ entry: [{ changes: [{ field: "comments", value: {
+      id: "self-comment", text: "гайд", media: { id: "demo-reel-1" },
+      from: { id: "17841400000000000", username: "demo_account" },
+    } }] }] }),
+  });
+  assert.equal(selfWebhook.response.status, 200);
+  const selfEvents = await sql`SELECT id FROM events WHERE comment_id = 'self-comment'`;
+  assert.equal(selfEvents.length, 0, "Comments written by the connected account must be ignored");
+
   const mock = await request("/api/mock/comment", {
     method: "POST", headers: auth,
     body: JSON.stringify({ text: "Хочу ГАЙД", mediaId: "demo-reel-1", username: "integration_user" }),
@@ -98,9 +118,14 @@ try {
   assert.equal(dashboard.body.connection.username, "demo_account");
   assert.equal(dashboard.body.events[0].status, "sent");
   assert.equal(dashboard.body.stats.sent_24h, 1);
-  console.log("Integration flow passed: login → Meta connection → rule → comment → public reply → private reply.");
+  const delivered = await sql`SELECT kind, attempts FROM jobs ORDER BY kind`;
+  assert.equal(delivered.length, 2);
+  assert.ok(delivered.every((job) => job.attempts === 1), "Leader lease must prevent duplicate dispatch attempts");
+  const ready = await request("/ready");
+  assert.equal(ready.response.status, 200);
+  console.log("Integration flow passed: two workers → one leader → self-filter → public reply → private reply.");
 } finally {
-  stopWorker();
+  await Promise.all(stopWorkers.map((stop) => stop()));
   await app.close();
   await sql.end({ timeout: 5 });
 }

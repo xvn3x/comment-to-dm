@@ -22,6 +22,7 @@ export type InstagramComment = {
   senderId: string;
   username?: string;
   text: string;
+  isSelf?: boolean;
 };
 
 export function normalizeText(value: string): string {

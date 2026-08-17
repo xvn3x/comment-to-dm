@@ -2,7 +2,12 @@ import postgres from "postgres";
 
 export type Db = ReturnType<typeof postgres>;
 
-const schema = `
+const baseSchema = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS meta_connection (
   singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
   app_id TEXT,
@@ -13,15 +18,35 @@ CREATE TABLE IF NOT EXISTS meta_connection (
   token_enc TEXT,
   token_expires_at TIMESTAMPTZ,
   connected_at TIMESTAMPTZ,
+  outbound_paused BOOLEAN NOT NULL DEFAULT FALSE,
+  rate_limited_until TIMESTAMPTZ,
+  rate_limit_reason TEXT,
+  consecutive_rate_limits INTEGER NOT NULL DEFAULT 0,
+  consecutive_api_failures INTEGER NOT NULL DEFAULT 0,
+  last_meta_usage_percent INTEGER,
+  last_meta_response_at TIMESTAMPTZ,
+  health_state TEXT NOT NULL DEFAULT 'healthy',
+  health_reason TEXT,
+  health_since TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  next_health_probe_at TIMESTAMPTZ,
+  token_refresh_error TEXT,
+  token_refresh_failures INTEGER NOT NULL DEFAULT 0,
+  subscription_healthy BOOLEAN,
+  subscription_last_checked_at TIMESTAMPTZ,
+  worker_heartbeat_at TIMESTAMPTZ,
+  last_webhook_at TIMESTAMPTZ,
+  last_webhook_error TEXT,
+  unparsed_webhooks INTEGER NOT NULL DEFAULT 0,
+  surge_mode BOOLEAN NOT NULL DEFAULT FALSE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS outbound_paused BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS rate_limited_until TIMESTAMPTZ;
-ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS rate_limit_reason TEXT;
-ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS consecutive_rate_limits INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_meta_usage_percent INTEGER;
-ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_meta_response_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS worker_leases (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  owner_id UUID,
+  expires_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
@@ -71,10 +96,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK (kind IN ('public_reply', 'private_reply')),
   payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'retry_wait', 'sent', 'failed', 'dead_letter', 'expired', 'skipped')),
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'retry_wait', 'uncertain', 'sent', 'failed', 'dead_letter', 'expired', 'skipped')),
   attempts INTEGER NOT NULL DEFAULT 0,
+  ambiguous_attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  dispatch_started_at TIMESTAMPTZ,
   last_error TEXT,
+  last_error_code TEXT,
+  last_error_action TEXT,
   external_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -82,15 +111,73 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_queue_idx ON jobs (status, next_attempt_at, created_at);
-
-ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
-ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
-  CHECK (status IN ('queued', 'processing', 'retry_wait', 'sent', 'failed', 'dead_letter', 'expired', 'skipped'));
 `;
 
+const migrations = [
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS outbound_paused BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS rate_limited_until TIMESTAMPTZ;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS rate_limit_reason TEXT;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS consecutive_rate_limits INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS consecutive_api_failures INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_meta_usage_percent INTEGER;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_meta_response_at TIMESTAMPTZ;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS health_state TEXT NOT NULL DEFAULT 'healthy';
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS health_reason TEXT;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS health_since TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS next_health_probe_at TIMESTAMPTZ;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS token_refresh_error TEXT;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS token_refresh_failures INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS subscription_healthy BOOLEAN;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS subscription_last_checked_at TIMESTAMPTZ;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS worker_heartbeat_at TIMESTAMPTZ;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_webhook_at TIMESTAMPTZ;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS last_webhook_error TEXT;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS unparsed_webhooks INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE meta_connection ADD COLUMN IF NOT EXISTS surge_mode BOOLEAN NOT NULL DEFAULT FALSE;
+
+      CREATE TABLE IF NOT EXISTS worker_leases (
+        singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+        owner_id UUID,
+        expires_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ambiguous_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS dispatch_started_at TIMESTAMPTZ;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS last_error_code TEXT;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS last_error_action TEXT;
+      ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
+      ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
+        CHECK (status IN ('queued', 'processing', 'retry_wait', 'uncertain', 'sent', 'failed', 'dead_letter', 'expired', 'skipped'));
+    `,
+  },
+];
+
 export async function createDb(databaseUrl: string): Promise<Db> {
-  const sql = postgres(databaseUrl, { max: 5, idle_timeout: 20 });
-  await sql.unsafe(schema);
-  await sql`INSERT INTO meta_connection (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING`;
+  const sql = postgres(databaseUrl, { max: 8, idle_timeout: 20, connect_timeout: 15 });
+  await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext('commentdm-schema-migrations'))`;
+    const existing = await tx<{ present: boolean }[]>`
+      SELECT to_regclass('public.meta_connection') IS NOT NULL AS present
+    `;
+    await tx.unsafe(baseSchema);
+    if (!existing[0]?.present) {
+      for (const migration of migrations) {
+        await tx`INSERT INTO schema_migrations (version) VALUES (${migration.version}) ON CONFLICT DO NOTHING`;
+      }
+    }
+    const applied = await tx<{ version: number }[]>`SELECT version FROM schema_migrations`;
+    const versions = new Set(applied.map((row) => row.version));
+    for (const migration of migrations) {
+      if (versions.has(migration.version)) continue;
+      await tx.unsafe(migration.sql);
+      await tx`INSERT INTO schema_migrations (version) VALUES (${migration.version})`;
+    }
+    await tx`INSERT INTO meta_connection (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING`;
+    await tx`INSERT INTO worker_leases (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING`;
+  });
   return sql;
 }

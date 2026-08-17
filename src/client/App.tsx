@@ -30,12 +30,26 @@ type Dashboard = {
     rate_limit_reason: string | null;
     last_meta_usage_percent: number | null;
     last_meta_response_at: string | null;
+    health_state: "healthy" | "degraded" | "rate_limited" | "reauth_required" | "permission_required" | "restricted" | "misconfigured";
+    health_reason: string | null;
+    health_since: string;
+    next_health_probe_at: string | null;
+    token_refresh_error: string | null;
+    token_refresh_failures: number;
+    subscription_healthy: boolean | null;
+    subscription_last_checked_at: string | null;
+    worker_heartbeat_at: string | null;
+    last_webhook_at: string | null;
+    last_webhook_error: string | null;
+    unparsed_webhooks: number;
+    surge_mode: boolean;
   };
   rules: Rule[];
   events: Array<{
     id: string;
     username: string | null;
     status: string;
+    error_message?: string | null;
     rule_name: string | null;
     media_id: string;
     created_at: string;
@@ -46,6 +60,7 @@ type Dashboard = {
     private_pending: number;
     public_pending: number;
     retrying: number;
+    uncertain: number;
     failed: number;
     expired: number;
     oldest_seconds: number;
@@ -88,7 +103,15 @@ const emptyRule: RuleForm = {
 };
 
 function statusLabel(status: string) {
-  return ({ sent: "Отправлено", queued: "В очереди", processing: "Отправляется", failed: "Ошибка", skipped_duplicate: "Повтор" } as Record<string, string>)[status] ?? status;
+  return ({ sent: "Отправлено", queued: "В очереди", processing: "Отправляется", retry_wait: "Ожидает повтора", uncertain: "Проверяется", failed: "Ошибка", skipped_duplicate: "Повтор" } as Record<string, string>)[status] ?? status;
+}
+
+function healthLabel(state?: Dashboard["connection"]["health_state"]) {
+  return ({
+    healthy: "Подключение исправно", degraded: "Временная проблема", rate_limited: "Пауза Meta",
+    reauth_required: "Нужно переподключить Instagram", permission_required: "Не хватает разрешений",
+    restricted: "Аккаунт временно ограничен", misconfigured: "Ошибка конфигурации",
+  } as Record<string, string>)[state ?? "healthy"];
 }
 
 function duration(seconds: number) {
@@ -113,6 +136,8 @@ export function App() {
 
   const connected = Boolean(dashboard?.connection.ig_user_id);
   const activeRules = useMemo(() => dashboard?.rules.filter((item) => item.active).length ?? 0, [dashboard]);
+  const healthState = dashboard?.connection.health_state ?? "healthy";
+  const healthBlocked = ["reauth_required", "permission_required", "restricted", "misconfigured"].includes(healthState);
 
   async function refresh() {
     const data = await api<Dashboard>("/api/dashboard");
@@ -194,6 +219,17 @@ export function App() {
       await refresh();
     } catch {
       setError("Не удалось изменить состояние очереди.");
+    } finally { setBusy(false); }
+  }
+
+  async function checkConnectionHealth() {
+    setBusy(true); setError("");
+    try {
+      await api("/api/meta/health-check", { method: "POST" });
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Проверка подключения не прошла.");
+      await refresh().catch(() => undefined);
     } finally { setBusy(false); }
   }
 
@@ -295,11 +331,12 @@ export function App() {
         <section className="panel queue-panel">
           <div className="panel-title">
             <div><h2>Очередь доставки</h2><p>Direct отправляется первым. При ограничениях Meta очередь остановится автоматически и ничего не потеряет.</p></div>
-            <span className={`queue-state ${dashboard?.connection.outbound_paused ? "paused" : dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() ? "limited" : "ready"}`}>
+            <span className={`queue-state ${dashboard?.connection.outbound_paused || healthBlocked ? "paused" : healthState !== "healthy" || dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() ? "limited" : "ready"}`}>
               {dashboard?.connection.outbound_paused
                 ? "Пауза"
-                : dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date()
-                  ? "Пауза Meta"
+                : healthState !== "healthy" ? healthLabel(healthState)
+                  : dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date()
+                    ? "Пауза Meta"
                   : (dashboard?.queue.pending ?? 0) > 0 ? "Отправляется" : "Готова"}
             </span>
           </div>
@@ -313,6 +350,14 @@ export function App() {
             <span>Самое старое задание: {duration(dashboard?.queue.oldest_seconds ?? 0)}</span>
             <span>Оценка завершения: {(dashboard?.queue.throughput_per_minute ?? 0) > 0 ? duration(((dashboard?.queue.pending ?? 0) / dashboard!.queue.throughput_per_minute) * 60) : "собираем данные"}</span>
             {(dashboard?.queue.retrying ?? 0) > 0 && <span>Ожидают повтора: {dashboard?.queue.retrying}</span>}
+            {(dashboard?.queue.uncertain ?? 0) > 0 && <span>Проверяем результат: {dashboard?.queue.uncertain}</span>}
+          </div>}
+          {healthState !== "healthy" && <div className={`queue-warning ${healthBlocked ? "critical" : ""}`}>
+            <strong>{healthLabel(healthState)}</strong>
+            <span>{dashboard?.connection.health_reason ?? "Приложение выполнит безопасную повторную проверку автоматически."}</span>
+          </div>}
+          {dashboard?.connection.surge_mode && <div className="queue-warning surge">
+            Режим всплеска: временно отправляем только Direct, чтобы не приблизиться к семидневному дедлайну.
           </div>}
           {dashboard?.connection.rate_limited_until && new Date(dashboard.connection.rate_limited_until) > new Date() && <div className="queue-warning">
             Meta временно ограничила скорость. Продолжим после {new Date(dashboard.connection.rate_limited_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.
@@ -322,6 +367,8 @@ export function App() {
               {dashboard?.connection.outbound_paused ? "Продолжить отправку" : "Поставить на паузу"}
             </button>
             {(dashboard?.queue.failed ?? 0) > 0 && <button className="ghost" disabled={busy} onClick={() => void queueAction("retry-failed")}>Повторить ошибки ({dashboard?.queue.failed})</button>}
+            {connected && <button className="ghost" disabled={busy} onClick={() => void checkConnectionHealth()}>Проверить подключение</button>}
+            {healthState === "reauth_required" && <button className="ghost" disabled={busy} onClick={() => setShowConnection(true)}>Переподключить</button>}
             {dashboard?.connection.last_meta_usage_percent != null && <span className="meta-usage">Нагрузка Meta: {dashboard.connection.last_meta_usage_percent}%</span>}
           </div>
         </section>

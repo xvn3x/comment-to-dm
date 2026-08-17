@@ -5,6 +5,7 @@ export class MetaApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: number,
+    readonly subcode?: number,
     readonly transient = false,
     readonly retryAfterSeconds?: number,
     readonly usagePercent?: number,
@@ -14,20 +15,47 @@ export class MetaApiError extends Error {
   }
 }
 
+export class MetaTransportError extends Error {
+  constructor(message: string, readonly ambiguous: boolean, readonly transportCode?: string) {
+    super(message);
+  }
+}
+
+export class MetaAmbiguousError extends Error {
+  readonly ambiguous = true;
+}
+
+type MetaCredentials = {
+  appId: string;
+  appSecret: string;
+  graphVersion: string;
+};
+
+export type SendContext = {
+  igUserId: string;
+  token: string;
+  graphVersion: string;
+};
+
+type RequestMode = "read" | "write";
+
 function positiveNumber(value: unknown): number | undefined {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
-function usagePercentFromHeaders(headers: Headers): number | undefined {
-  const values: number[] = [];
+function usageFromHeaders(headers: Headers): { percent?: number; recoverySeconds?: number } {
+  const percentages: number[] = [];
+  const recoveries: number[] = [];
   for (const name of ["x-app-usage", "x-business-use-case-usage"]) {
     const raw = headers.get(name);
     if (!raw) continue;
     try {
       const visit = (value: unknown, key?: string) => {
-        if (typeof value === "number" && ["call_count", "total_cputime", "total_time"].includes(key ?? "")) {
-          values.push(value);
+        if (typeof value === "number" && ["call_count", "call_volume", "cpu_time", "total_cputime", "total_time"].includes(key ?? "")) {
+          percentages.push(value);
+        } else if (typeof value === "number" && key === "estimated_time_to_regain_access") {
+          recoveries.push(value);
         } else if (Array.isArray(value)) {
           value.forEach((entry) => visit(entry));
         } else if (value && typeof value === "object") {
@@ -36,10 +64,13 @@ function usagePercentFromHeaders(headers: Headers): number | undefined {
       };
       visit(JSON.parse(raw));
     } catch {
-      // Unknown usage headers must never break a successful API request.
+      // Meta may add fields without notice; unknown headers must not break delivery.
     }
   }
-  return values.length ? Math.max(...values) : undefined;
+  return {
+    percent: percentages.length ? Math.max(...percentages) : undefined,
+    recoverySeconds: recoveries.length ? Math.max(...recoveries) : undefined,
+  };
 }
 
 function retryAfterSeconds(headers: Headers): number | undefined {
@@ -51,21 +82,32 @@ function retryAfterSeconds(headers: Headers): number | undefined {
   return Number.isFinite(date) ? Math.max(1, Math.ceil((date - Date.now()) / 1000)) : undefined;
 }
 
-type MetaCredentials = {
-  appId: string;
-  appSecret: string;
-  graphVersion: string;
-};
+function transportCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const direct = (error as { code?: unknown }).code;
+  const cause = (error as { cause?: { code?: unknown } }).cause?.code;
+  return typeof direct === "string" ? direct : typeof cause === "string" ? cause : undefined;
+}
 
-type SendContext = {
-  igUserId: string;
-  token: string;
-  graphVersion: string;
-};
+const DEFINITELY_NOT_SENT = new Set([
+  "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_DNS_TIMEOUT",
+]);
 
-async function parseMetaResponse(response: Response): Promise<Record<string, unknown>> {
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  const usagePercent = usagePercentFromHeaders(response.headers);
+async function parseResponse(response: Response, mode: RequestMode): Promise<Record<string, unknown>> {
+  const text = await response.text();
+  let body: Record<string, unknown> = {};
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON object expected");
+      body = parsed as Record<string, unknown>;
+    } catch {
+      if (response.ok && mode === "write") throw new MetaAmbiguousError("Meta returned an unreadable success response.");
+      throw new MetaApiError("Meta returned an unreadable response.", response.ok ? 502 : response.status, undefined, undefined, true);
+    }
+  }
+
+  const usage = usageFromHeaders(response.headers);
   if (!response.ok) {
     const detail = (body.error ?? {}) as Record<string, unknown>;
     const errorData = (detail.error_data ?? {}) as Record<string, unknown>;
@@ -73,22 +115,45 @@ async function parseMetaResponse(response: Response): Promise<Record<string, unk
       String(detail.message ?? `Meta API returned HTTP ${response.status}`),
       response.status,
       typeof detail.code === "number" ? detail.code : undefined,
+      typeof detail.error_subcode === "number" ? detail.error_subcode : undefined,
       Boolean(detail.is_transient),
       retryAfterSeconds(response.headers),
-      usagePercent,
-      positiveNumber(errorData.estimated_time_to_regain_access),
+      usage.percent,
+      positiveNumber(errorData.estimated_time_to_regain_access) ?? usage.recoverySeconds,
     );
   }
-  if (usagePercent !== undefined) body.__usagePercent = usagePercent;
+  body.__usagePercent = usage.percent;
   return body;
 }
 
 function sentResult(body: Record<string, unknown>, idField: "id" | "message_id") {
-  return { externalId: String(body[idField] ?? ""), usagePercent: positiveNumber(body.__usagePercent) };
+  const externalId = typeof body[idField] === "string" || typeof body[idField] === "number"
+    ? String(body[idField])
+    : "";
+  if (!externalId) throw new MetaAmbiguousError(`Meta returned success without ${idField}.`);
+  return { externalId, usagePercent: positiveNumber(body.__usagePercent) };
 }
 
 export class MetaClient {
   constructor(private readonly config: AppConfig) {}
+
+  private async request(url: string | URL, init: RequestInit = {}, mode: RequestMode = "read") {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.META_REQUEST_TIMEOUT_MS);
+    timeout.unref();
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      return await parseResponse(response, mode);
+    } catch (error) {
+      if (error instanceof MetaApiError || error instanceof MetaAmbiguousError) throw error;
+      const code = transportCode(error);
+      const ambiguous = mode === "write" && !DEFINITELY_NOT_SENT.has(code ?? "");
+      const message = error instanceof Error ? error.message : "Unknown network error";
+      throw new MetaTransportError(`Meta network error${code ? ` (${code})` : ""}: ${message}`, ambiguous, code);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   authorizationUrl(credentials: MetaCredentials, state: string, redirectUri: string): string {
     const url = new URL("https://www.instagram.com/oauth/authorize");
@@ -110,7 +175,6 @@ export class MetaClient {
     if (this.config.META_MODE === "mock") {
       return { accessToken: "mock-access-token", userId: "17841400000000000", expiresIn: 5_184_000 };
     }
-
     const form = new URLSearchParams({
       client_id: credentials.appId,
       client_secret: credentials.appSecret,
@@ -118,21 +182,18 @@ export class MetaClient {
       redirect_uri: redirectUri,
       code,
     });
-    const shortResponse = await fetch("https://api.instagram.com/oauth/access_token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form,
-    });
-    const short = await parseMetaResponse(shortResponse);
+    const short = await this.request("https://api.instagram.com/oauth/access_token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form,
+    }, "write");
     const shortToken = String(short.access_token ?? "");
     const userId = String(short.user_id ?? "");
-    if (!shortToken || !userId) throw new MetaApiError("Instagram did not return an access token.", 502);
+    if (!shortToken || !userId) throw new MetaApiError("Instagram did not return an access token.", 502, undefined, undefined, true);
 
     const longUrl = new URL("https://graph.instagram.com/access_token");
     longUrl.searchParams.set("grant_type", "ig_exchange_token");
     longUrl.searchParams.set("client_secret", credentials.appSecret);
     longUrl.searchParams.set("access_token", shortToken);
-    const long = await parseMetaResponse(await fetch(longUrl));
+    const long = await this.request(longUrl);
     return {
       accessToken: String(long.access_token ?? shortToken),
       userId,
@@ -144,28 +205,39 @@ export class MetaClient {
     if (this.config.META_MODE === "mock") return { id: context.igUserId, username: "demo_account" };
     const url = new URL(`https://graph.instagram.com/${context.graphVersion}/me`);
     url.searchParams.set("fields", "id,user_id,username");
-    const body = await parseMetaResponse(await fetch(url, {
-      headers: { Authorization: `Bearer ${context.token}` },
-    }));
-    return { id: String(body.user_id ?? body.id ?? context.igUserId), username: body.username ? String(body.username) : undefined };
+    const body = await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } });
+    const id = String(body.user_id ?? body.id ?? "");
+    if (!id) throw new MetaApiError("Instagram profile response did not include an account ID.", 502, undefined, undefined, true);
+    return { id, username: body.username ? String(body.username) : undefined };
   }
 
   async subscribeToComments(context: SendContext): Promise<void> {
     if (this.config.META_MODE === "mock") return;
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/subscribed_apps`;
-    await parseMetaResponse(await fetch(url, {
+    const body = await this.request(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ subscribed_fields: ["comments"] }),
-    }));
+    }, "write");
+    if (body.success !== true) throw new MetaAmbiguousError("Meta did not confirm the webhook subscription.");
+  }
+
+  async subscribedFields(context: SendContext): Promise<string[]> {
+    if (this.config.META_MODE === "mock") return ["comments"];
+    const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/subscribed_apps`;
+    const body = await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } });
+    const entries = Array.isArray(body.data) ? body.data : [];
+    const fields = new Set<string>();
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const subscribed = (entry as { subscribed_fields?: unknown }).subscribed_fields;
+      if (Array.isArray(subscribed)) subscribed.forEach((field) => fields.add(String(field)));
+    }
+    return [...fields];
   }
 
   async listMedia(context: SendContext): Promise<Array<{
-    id: string;
-    caption?: string;
-    mediaType?: string;
-    permalink?: string;
-    timestamp?: string;
+    id: string; caption?: string; mediaType?: string; permalink?: string; timestamp?: string;
   }>> {
     if (this.config.META_MODE === "mock") return [
       { id: "demo-reel-1", caption: "Тестовый Reel: напишите «гайд»", mediaType: "VIDEO", timestamp: new Date().toISOString() },
@@ -174,16 +246,13 @@ export class MetaClient {
     const url = new URL(`https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/media`);
     url.searchParams.set("fields", "id,caption,media_type,permalink,timestamp");
     url.searchParams.set("limit", "50");
-    const body = await parseMetaResponse(await fetch(url, {
-      headers: { Authorization: `Bearer ${context.token}` },
-    }));
+    const body = await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } });
     const data = Array.isArray(body.data) ? body.data : [];
     return data.flatMap((item) => {
       if (!item || typeof item !== "object" || !("id" in item)) return [];
       const record = item as Record<string, unknown>;
       return [{
-        id: String(record.id),
-        caption: record.caption ? String(record.caption) : undefined,
+        id: String(record.id), caption: record.caption ? String(record.caption) : undefined,
         mediaType: record.media_type ? String(record.media_type) : undefined,
         permalink: record.permalink ? String(record.permalink) : undefined,
         timestamp: record.timestamp ? String(record.timestamp) : undefined,
@@ -196,22 +265,35 @@ export class MetaClient {
     const url = new URL("https://graph.instagram.com/refresh_access_token");
     url.searchParams.set("grant_type", "ig_refresh_token");
     url.searchParams.set("access_token", context.token);
-    const body = await parseMetaResponse(await fetch(url));
-    return {
-      accessToken: String(body.access_token ?? context.token),
-      expiresIn: Number(body.expires_in ?? 0) || undefined,
-    };
+    const body = await this.request(url);
+    const accessToken = String(body.access_token ?? "");
+    if (!accessToken) throw new MetaApiError("Meta did not return a refreshed token.", 502, undefined, undefined, true);
+    return { accessToken, expiresIn: Number(body.expires_in ?? 0) || undefined };
   }
 
   async publicReply(context: SendContext, commentId: string, message: string) {
     if (this.config.META_MODE === "mock") return { externalId: `mock-public-${Date.now()}`, usagePercent: undefined };
     const url = `https://graph.instagram.com/${context.graphVersion}/${commentId}/replies`;
-    const body = await parseMetaResponse(await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
+    const body = await this.request(url, {
+      method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
-    }));
+    }, "write");
     return sentResult(body, "id");
+  }
+
+  async hasPublicReply(context: SendContext, commentId: string, message: string): Promise<boolean> {
+    if (this.config.META_MODE === "mock") return false;
+    const url = new URL(`https://graph.instagram.com/${context.graphVersion}/${commentId}/replies`);
+    url.searchParams.set("fields", "id,text,from");
+    url.searchParams.set("limit", "100");
+    const body = await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } });
+    const replies = Array.isArray(body.data) ? body.data : [];
+    return replies.some((reply) => {
+      if (!reply || typeof reply !== "object") return false;
+      const record = reply as Record<string, unknown>;
+      const from = record.from && typeof record.from === "object" ? record.from as Record<string, unknown> : {};
+      return String(record.text ?? "") === message && (!from.id || String(from.id) === context.igUserId);
+    });
   }
 
   async privateReply(
@@ -222,26 +304,15 @@ export class MetaClient {
   ) {
     if (this.config.META_MODE === "mock") return { externalId: `mock-private-${Date.now()}`, usagePercent: undefined };
     const body = button
-      ? {
-          recipient: { comment_id: commentId },
-          message: {
-            attachment: {
-              type: "template",
-              payload: {
-                template_type: "button",
-                text: message,
-                buttons: [{ type: "web_url", title: button.title, url: button.url }],
-              },
-            },
-          },
-        }
+      ? { recipient: { comment_id: commentId }, message: { attachment: { type: "template", payload: {
+          template_type: "button", text: message, buttons: [{ type: "web_url", title: button.title, url: button.url }],
+        } } } }
       : { recipient: { comment_id: commentId }, message: { text: message } };
     const url = `https://graph.instagram.com/${context.graphVersion}/${context.igUserId}/messages`;
-    const result = await parseMetaResponse(await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
+    const result = await this.request(url, {
+      method: "POST", headers: { Authorization: `Bearer ${context.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }));
+    }, "write");
     return sentResult(result, "message_id");
   }
 }

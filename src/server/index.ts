@@ -10,7 +10,7 @@ const { app, meta, box } = await buildApp(sql, config);
 const stopWorker = startWorker(sql, config, meta, box);
 
 const shutdown = async () => {
-  stopWorker();
+  await stopWorker();
   await app.close();
   await sql.end({ timeout: 5 });
   process.exit(0);

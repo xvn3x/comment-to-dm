@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import { pickPublicReply, ruleMatches, type InstagramComment, type RuleRecord } from "./rules.js";
 
-export async function enqueueComment(sql: Db, comment: InstagramComment): Promise<"queued" | "duplicate" | "no_match"> {
+export async function enqueueComment(sql: Db, comment: InstagramComment): Promise<"queued" | "duplicate" | "no_match" | "ignored_self"> {
+  if (comment.isSelf) return "ignored_self";
   const rules = await sql<RuleRecord[]>`
     SELECT * FROM rules WHERE active = TRUE ORDER BY priority ASC, created_at ASC
   `;
@@ -68,26 +69,31 @@ export function extractComments(payload: unknown): InstagramComment[] {
     ? (payload as { entry: unknown[] }).entry
     : [];
   const comments: InstagramComment[] = [];
+  const append = (field: unknown, value: unknown) => {
+    if (field !== "comments" || !value || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    const from = (record.from ?? {}) as Record<string, unknown>;
+    const media = (record.media ?? {}) as Record<string, unknown>;
+    if (!record.id || !media.id || !from.id || typeof record.text !== "string") return;
+    comments.push({
+      commentId: String(record.id),
+      mediaId: String(media.id),
+      senderId: String(from.id),
+      username: from.username ? String(from.username) : undefined,
+      text: record.text,
+      isSelf: record.is_self === true || Boolean(from.self_ig_scoped_id),
+    });
+  };
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
+    const entryRecord = entry as Record<string, unknown>;
+    append(entryRecord.field, entryRecord.value);
     const changes = Array.isArray((entry as { changes?: unknown }).changes)
       ? (entry as { changes: unknown[] }).changes
       : [];
     for (const change of changes) {
-      if (!change || typeof change !== "object" || (change as { field?: unknown }).field !== "comments") continue;
-      const value = (change as { value?: unknown }).value;
-      if (!value || typeof value !== "object") continue;
-      const record = value as Record<string, unknown>;
-      const from = (record.from ?? {}) as Record<string, unknown>;
-      const media = (record.media ?? {}) as Record<string, unknown>;
-      if (!record.id || !media.id || !from.id || typeof record.text !== "string") continue;
-      comments.push({
-        commentId: String(record.id),
-        mediaId: String(media.id),
-        senderId: String(from.id),
-        username: from.username ? String(from.username) : undefined,
-        text: record.text,
-      });
+      if (!change || typeof change !== "object") continue;
+      append((change as { field?: unknown }).field, (change as { value?: unknown }).value);
     }
   }
   return comments;

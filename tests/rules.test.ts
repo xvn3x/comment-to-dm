@@ -38,5 +38,13 @@ test("webhook parser extracts comment events and ignores unrelated changes", () 
     { field: "messages", value: {} },
     { field: "comments", value: { id: "c1", text: "гайд", from: { id: "u1", username: "anna" }, media: { id: "m1" } } },
   ] }] });
-  assert.deepEqual(result, [{ commentId: "c1", mediaId: "m1", senderId: "u1", username: "anna", text: "гайд" }]);
+  assert.deepEqual(result, [{ commentId: "c1", mediaId: "m1", senderId: "u1", username: "anna", text: "гайд", isSelf: false }]);
+});
+
+test("webhook parser recognizes direct entry payloads and self comments", () => {
+  const result = extractComments({ entry: [{ field: "comments", value: {
+    id: "c2", text: "гайд", from: { id: "self", username: "owner", self_ig_scoped_id: "self" }, media: { id: "m1" },
+  } }] });
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.isSelf, true);
 });
