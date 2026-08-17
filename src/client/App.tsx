@@ -141,7 +141,7 @@ function TagInput({ values, onChange, placeholder, label }: { values: string[]; 
     setDraft("");
   }
   function keyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter" || event.key === "," || event.key === "Tab") {
+    if (event.key === "Enter" || event.key === ",") {
       if (draft.trim()) { event.preventDefault(); commit(); }
     }
     if (event.key === "Backspace" && !draft && values.length) onChange(values.slice(0, -1));
@@ -151,7 +151,12 @@ function TagInput({ values, onChange, placeholder, label }: { values: string[]; 
 
 function VariantEditor({ values, onChange, addLabel, removeLabel }: { values: string[]; onChange: (values: string[]) => void; addLabel: string; removeLabel: string }) {
   const rows = values.length ? values : [""];
-  return <div className="variant-editor"><div className="variant-list">{rows.map((value, index) => <div className="variant-row" key={index}><span>{String(index + 1).padStart(2, "0")}</span><textarea rows={2} value={value} onChange={(event) => { const next = [...rows]; next[index] = event.target.value; onChange(next); }} /><button type="button" onClick={() => onChange(rows.filter((_, itemIndex) => itemIndex !== index))} aria-label={removeLabel}><Trash2 /></button></div>)}</div><button type="button" className="add-variant" onClick={() => onChange([...rows, ""])}><Plus />{addLabel}</button></div>;
+  const inputs = useRef<Array<HTMLInputElement | null>>([]);
+  function appendVariant() {
+    onChange([...rows, ""]);
+    window.requestAnimationFrame(() => inputs.current[rows.length]?.focus());
+  }
+  return <div className="variant-editor"><div className="variant-list">{rows.map((value, index) => <div className="variant-row" key={index}><span>{String(index + 1).padStart(2, "0")}</span><input ref={(element) => { inputs.current[index] = element; }} value={value} onChange={(event) => { const next = [...rows]; next[index] = event.target.value; onChange(next); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); appendVariant(); } }} /><button type="button" onClick={() => onChange(rows.filter((_, itemIndex) => itemIndex !== index))} aria-label={removeLabel}><Trash2 /></button></div>)}</div><button type="button" className="add-variant" onClick={appendVariant}><Plus />{addLabel}</button></div>;
 }
 
 export function App() {

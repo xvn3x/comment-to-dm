@@ -297,7 +297,7 @@ body:has(.rule-editor-layout) .page-title h1 { font-size: clamp(1.9rem, 3vw, 2.3
 .variant-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) 38px; align-items: stretch; overflow: hidden; background: var(--surface-3); border: 1px solid var(--border); border-radius: 10px; }
 .variant-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .variant-row > span { display: grid; color: var(--faint); background: var(--surface-2); place-items: center; font: .62rem/1 "IBM Plex Mono", monospace; }
-.variant-row textarea { min-height: 58px; resize: vertical; background: transparent; border: 0; border-radius: 0; outline: 0; }
+.variant-row input { min-height: 48px; background: transparent; border: 0; border-radius: 0; outline: 0; }
 .variant-row button { display: grid; padding: 0; color: var(--faint); cursor: pointer; background: transparent; border: 0; place-items: center; }
 .variant-row button:hover { color: var(--danger); background: var(--danger-soft); }
 .variant-row button svg { width: 15px; }
