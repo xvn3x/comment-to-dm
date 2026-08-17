@@ -3,7 +3,7 @@ import {
   Activity, ArrowLeft, Camera, Check, ChevronRight, CircleAlert, CirclePlay, Clock3, Copy, ExternalLink,
   FileText, Gauge, ImageIcon, Languages, Layers3, Link2, LockKeyhole, LogOut, MessageCircle,
   MessageCircleReply, Mic, Moon, MousePointerClick, Pause, Play, Plug, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck,
-  Sun, Trash2, TriangleAlert, X, Zap,
+  Sticker, Sun, Trash2, TriangleAlert, Wifi, X, Zap,
 } from "lucide-react";
 import { api, ApiError } from "./api";
 import { copy, type Language } from "./i18n";
@@ -403,9 +403,19 @@ export function App() {
     const reply = rule.publicReplies.split("\n").find(Boolean) ?? t.commentReply;
     const account = dashboard?.connection.username ?? "studio.mono";
     const initials = account.split(/[._-]/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "SM";
+    const displayName = account.split(/[._-]/).filter(Boolean)[0]?.replace(/^./, (letter) => letter.toUpperCase()) || "Instagram";
     const message = rule.followGateEnabled ? rule.followGatePrompt : rule.dmText;
-    return <section className="preview-card card"><div className="preview-heading"><strong>{t.preview}</strong><span><Camera />Direct</span></div><div className="phone-preview"><div className="phone-top"><ChevronRight className="preview-back" /><span className="avatar">{initials}</span><div><strong>{account}</strong><small>{language === "ru" ? "Бизнес-чат" : "Business chat"}</small></div></div><div className="phone-body">
-      {directEnabled ? <>{rule.triggerType === "comment" && <div className="ig-system">{language === "ru" ? `${account} написал(-а) вам о комментарии, который вы добавили к его публикации. Посмотреть публикацию` : `${account} messaged you about a comment you left on their post. View post`}</div>}<div className="ig-message-row"><span className="ig-avatar">{initials}</span><div className="ig-bubble">{message || t.directMessage}{(rule.followGateEnabled ? rule.followGateButtonText : rule.buttonText) && <button type="button">{rule.followGateEnabled ? rule.followGateButtonText : rule.buttonText}</button>}</div></div>{rule.followGateEnabled && <><div className="ig-user-bubble">{rule.followGateButtonText || t.check}</div><div className="ig-message-row"><span className="ig-avatar">{initials}</span><div className="ig-bubble retry">{rule.followGateRetryText || t.notFollowing}</div></div></>}</> : <div className="preview-only-comment"><MessageCircle /><strong>{language === "ru" ? "Только публичный ответ" : "Public reply only"}</strong><p>{reply}</p></div>}
-    </div><div className="phone-input"><span><Camera /></span><em>{language === "ru" ? "Напишите сообщение…" : "Message…"}</em><Mic /><ImageIcon /></div></div><p className="preview-note">{language === "ru" ? "Так это увидит человек в Instagram. Ответ под комментарием отправляется отдельно." : "This is what the person sees in Instagram. The public comment reply is sent separately."}</p></section>;
+    const systemMessage = <div className="ig-system"><strong>{account}</strong>{language === "ru" ? " написал(-а) вам о комментарии, который вы добавили к его/ее публикации." : " messaged you about a comment you left on their post."}<b>{language === "ru" ? "Посмотреть публикацию" : "View post"}</b></div>;
+    const avatar = <span className="ig-avatar" aria-hidden="true">{initials}</span>;
+    return <section className="preview-card card"><div className="preview-heading"><strong>{t.preview}</strong><span><Camera />Instagram Direct</span></div><div className="phone-preview">
+      <div className="phone-status"><strong>06:40</strong><span className="phone-status-icons"><span className="phone-signal"><i /><i /><i /><i /></span><Wifi /><span className="phone-battery"><i /></span></span></div>
+      <div className="phone-top"><ChevronRight className="preview-back" /><span className="avatar">{initials}</span><div><strong>{displayName}</strong><small>{account}</small></div></div>
+      <div className="phone-body">{directEnabled ? <>
+        <div className="ig-thread"><time>06:39</time>{rule.triggerType === "comment" && systemMessage}<div className="ig-message-row">{avatar}<div className="ig-bubble"><span>{message || t.directMessage}</span>{(rule.followGateEnabled ? rule.followGateButtonText : rule.buttonText) && <button type="button">{rule.followGateEnabled ? rule.followGateButtonText : rule.buttonText}</button>}</div></div>
+          {rule.followGateEnabled && <><div className="ig-new-messages"><span />{language === "ru" ? "Новые сообщения" : "New messages"}<span /></div><time>06:40</time>{rule.triggerType === "comment" && systemMessage}<div className="ig-message-row">{avatar}<div className="ig-bubble retry"><span>{rule.followGateRetryText || t.notFollowing}</span><button type="button">{rule.followGateButtonText || t.check}</button></div></div></>}
+        </div>
+      </> : <div className="preview-only-comment"><MessageCircle /><strong>{language === "ru" ? "Только публичный ответ" : "Public reply only"}</strong><p>{reply}</p></div>}</div>
+      <div className="phone-input"><span><Camera /></span><em>{language === "ru" ? "Напишите сообщение…" : "Message…"}</em><Mic /><ImageIcon /><Sticker /><Plus /></div><div className="phone-home-indicator" />
+    </div><p className="preview-note">{language === "ru" ? "Так это увидит человек в Instagram. Ответ под комментарием отправляется отдельно." : "This is what the person sees in Instagram. The public comment reply is sent separately."}</p></section>;
   }
 }

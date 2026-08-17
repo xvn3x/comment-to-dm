@@ -329,27 +329,50 @@ body:has(.rule-editor-layout) .page-title h1 { font-size: clamp(1.9rem, 3vw, 2.3
 .preview-heading strong { font-size: .78rem; letter-spacing: .02em; text-transform: uppercase; }
 .preview-heading span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .68rem; }
 .preview-heading svg { width: 14px; }
-.phone-preview { overflow: hidden; color: #f4f4f6; background: #08090c; border-radius: 22px; }
-.phone-top { display: grid; height: 58px; grid-template-columns: 18px 30px minmax(0, 1fr); align-items: center; gap: 9px; padding: 0 12px; border-bottom: 1px solid #23252a; }
-.preview-back { width: 16px; transform: rotate(180deg); }
-.phone-top .avatar { display: grid; width: 30px; height: 30px; color: #201b17; background: #d6aa88; border-radius: 50%; place-items: center; font: 700 .58rem/1 "Onest"; }
-.phone-top div { display: grid; min-width: 0; gap: 2px; }
-.phone-top strong { overflow: hidden; font-size: .69rem; text-overflow: ellipsis; white-space: nowrap; }
-.phone-top small { color: #9699a0; font-size: .54rem; }
-.phone-body { display: grid; min-height: 360px; align-content: start; gap: 11px; padding: 14px 10px 12px; }
-.ig-system { margin: 2px 14px 4px; color: #8d9098; font-size: .55rem; line-height: 1.45; text-align: center; overflow-wrap: anywhere; }
-.ig-message-row { display: flex; min-width: 0; align-items: flex-end; gap: 7px; }
-.ig-avatar { display: grid; width: 22px; height: 22px; flex: 0 0 auto; color: #201b17; background: #d6aa88; border-radius: 50%; place-items: center; font: 700 .43rem/1 "Onest"; }
-.ig-bubble { max-width: 82%; padding: 11px 12px; color: #f4f4f6; background: #292c31; border-radius: 15px 15px 15px 4px; font-size: .66rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ig-bubble button { width: 100%; min-height: 36px; margin-top: 10px; color: #f8f8fa; cursor: default; background: #3b3d43; border: 0; border-radius: 9px; font: 600 .68rem/1 "Onest"; }
-.ig-user-bubble { width: fit-content; max-width: 72%; margin-left: auto; padding: 9px 14px; color: white; background: linear-gradient(135deg, #8b35f3, #5940f2); border-radius: 17px 17px 4px 17px; font-size: .66rem; overflow-wrap: anywhere; }
-.preview-only-comment { display: grid; gap: 8px; margin-top: 70px; padding: 22px; color: #c8cad0; background: #1c1f25; border: 1px dashed #484b52; border-radius: 14px; text-align: center; }
+.phone-preview { display: flex; aspect-ratio: 1170 / 2532; container-type: inline-size; overflow: hidden; flex-direction: column; color: #f5f5f7; background: #0c0f13; border-radius: 7cqw; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.phone-status { display: flex; height: 13cqw; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 0 5.1cqw 0 7.7cqw; }
+.phone-status > strong { font-family: inherit; font-size: 4.45cqw; font-weight: 600; letter-spacing: -.08cqw; }
+.phone-status-icons { display: flex; align-items: center; gap: 2.2cqw; }
+.phone-status-icons > svg { width: 5.7cqw; height: 5.7cqw; stroke-width: 2.5; }
+.phone-signal { display: flex; height: 5.2cqw; align-items: flex-end; gap: .8cqw; }
+.phone-signal i { display: block; width: 1.15cqw; background: currentColor; border-radius: .5cqw; }
+.phone-signal i:nth-child(1) { height: 2cqw; }
+.phone-signal i:nth-child(2) { height: 3cqw; }
+.phone-signal i:nth-child(3) { height: 4.1cqw; }
+.phone-signal i:nth-child(4) { height: 5.2cqw; }
+.phone-battery { position: relative; display: block; width: 7cqw; height: 3.8cqw; border: .65cqw solid #92959d; border-radius: 1.2cqw; }
+.phone-battery::after { position: absolute; top: .75cqw; right: -1.35cqw; width: .7cqw; height: 1.7cqw; content: ""; background: #92959d; border-radius: 0 .5cqw .5cqw 0; }
+.phone-battery i { display: block; width: 1.15cqw; height: 2.2cqw; margin: .15cqw; background: #e53d32; border-radius: .35cqw; }
+.phone-top { display: grid; height: 14.3cqw; flex: 0 0 auto; grid-template-columns: 6.2cqw 10.1cqw minmax(0, 1fr); align-items: center; gap: 3.2cqw; padding: 0 4.3cqw; border-bottom: 1px solid #272a2f; }
+.preview-back { width: 6.2cqw; height: 6.2cqw; transform: rotate(180deg); stroke-width: 2.1; }
+.phone-top .avatar, .ig-avatar { background: radial-gradient(circle at 32% 28%, #ddc4a3 0 17%, #a97763 18% 34%, #6e7782 35% 53%, #d3aa84 54% 70%, #758696 71%); }
+.phone-top .avatar { display: grid; width: 10.1cqw; height: 10.1cqw; color: #fff; border: .3cqw solid #2d3137; border-radius: 50%; place-items: center; font: 700 2.45cqw/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-shadow: 0 1px 2px #161719; }
+.phone-top div { display: grid; min-width: 0; gap: .8cqw; }
+.phone-top strong { overflow: hidden; font-family: inherit; font-size: 4.3cqw; font-weight: 700; letter-spacing: -.08cqw; text-overflow: ellipsis; white-space: nowrap; }
+.phone-top small { overflow: hidden; color: #a4a7af; font-size: 3.5cqw; text-overflow: ellipsis; white-space: nowrap; }
+.phone-body { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+.ig-thread { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 3.4cqw; overflow: auto; padding: 7.5cqw 4.1cqw 5cqw; scrollbar-width: none; overscroll-behavior: contain; }
+.ig-thread::-webkit-scrollbar { display: none; }
+.ig-thread > time { color: #9ca0aa; font-size: 3.5cqw; text-align: center; }
+.ig-system { max-width: 88%; margin: 0 auto 1.4cqw; color: #a8abb4; font-size: 3.25cqw; line-height: 1.32; text-align: center; overflow-wrap: anywhere; }
+.ig-system strong, .ig-system b { color: #b8bbc3; font-family: inherit; font-weight: 700; }
+.ig-system b { display: block; }
+.ig-message-row { display: flex; min-width: 0; align-items: flex-end; gap: 2.3cqw; }
+.ig-avatar { display: grid; width: 7.4cqw; height: 7.4cqw; flex: 0 0 auto; color: #fff; border: .25cqw solid #2d3137; border-radius: 50%; place-items: center; font: 700 1.75cqw/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-shadow: 0 1px 2px #161719; }
+.ig-bubble { width: fit-content; max-width: 74%; padding: 3.6cqw 3.8cqw; color: #f4f4f6; background: #26292e; border-radius: 5.4cqw 5.4cqw 5.4cqw 1.3cqw; font-size: 3.85cqw; font-weight: 400; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ig-bubble > span { display: block; }
+.ig-bubble button { width: 100%; min-height: 12.5cqw; margin-top: 3.4cqw; padding: 0 2cqw; color: #f7f7f9; cursor: default; background: #31343a; border: 0; border-radius: 2.9cqw; font: 600 3.8cqw/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.ig-new-messages { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 2.3cqw; color: #a9adb7; font-size: 3.4cqw; white-space: nowrap; }
+.ig-new-messages span { height: 1px; background: #b8bdc7; }
+.preview-only-comment { display: grid; align-self: center; gap: 2.4cqw; margin: auto 5cqw; padding: 6cqw; color: #c8cad0; background: #1c1f25; border: 1px dashed #484b52; border-radius: 4cqw; text-align: center; }
 .preview-only-comment svg { margin: auto; }
-.preview-only-comment p { margin: 0; color: #eff0f2; font-size: .68rem; overflow-wrap: anywhere; }
-.phone-input { display: grid; height: 46px; grid-template-columns: 30px minmax(0, 1fr) 18px 18px; align-items: center; gap: 8px; margin: 0 8px 8px; padding: 0 10px 0 6px; color: #b4b5bb; background: #202226; border-radius: 99px; font-size: .6rem; }
-.phone-input > span { display: grid; width: 30px; height: 30px; color: white; background: #713cf2; border-radius: 50%; place-items: center; }
-.phone-input svg { width: 14px; height: 14px; }
-.phone-input em { overflow: hidden; color: #8d9098; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.preview-only-comment p { margin: 0; color: #eff0f2; font-size: 3.7cqw; overflow-wrap: anywhere; }
+.phone-input { display: grid; height: 12.4cqw; flex: 0 0 auto; grid-template-columns: 9.5cqw minmax(0, 1fr) repeat(4, 5.6cqw); align-items: center; gap: 2.2cqw; margin: 0 2cqw; padding: 0 3.2cqw 0 1.3cqw; color: #f5f5f7; background: #1d2023; border-radius: 99px; font-size: 3.65cqw; }
+.phone-input > span { display: grid; width: 9.5cqw; height: 9.5cqw; color: white; background: #6242f4; border-radius: 50%; place-items: center; }
+.phone-input svg { width: 5.6cqw; height: 5.6cqw; stroke-width: 2; }
+.phone-input > span svg { width: 5.2cqw; height: 5.2cqw; stroke-width: 2.5; }
+.phone-input em { overflow: hidden; color: #a4a7af; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.phone-home-indicator { width: 35.5cqw; height: 1.35cqw; flex: 0 0 auto; margin: 8cqw auto 2.5cqw; background: #fff; border-radius: 99px; }
 .preview-note { margin: 13px 0 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
 
 @media (max-width: 1180px) {
