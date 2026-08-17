@@ -403,7 +403,8 @@ export function App() {
     const reply = rule.publicReplies.split("\n").find(Boolean) ?? t.commentReply;
     const account = dashboard?.connection.username ?? "studio.mono";
     const initials = account.split(/[._-]/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "SM";
-    const displayName = account.split(/[._-]/).filter(Boolean)[0]?.replace(/^./, (letter) => letter.toUpperCase()) || "Instagram";
+    const accountRoot = account.split(/[._-]/).filter(Boolean)[0] || "Instagram";
+    const displayName = accountRoot.length <= 3 ? accountRoot.toUpperCase() : accountRoot.replace(/^./, (letter) => letter.toUpperCase());
     const message = rule.followGateEnabled ? rule.followGatePrompt : rule.dmText;
     const systemMessage = <div className="ig-system"><strong>{account}</strong>{language === "ru" ? " написал(-а) вам о комментарии, который вы добавили к его/ее публикации." : " messaged you about a comment you left on their post."}<b>{language === "ru" ? "Посмотреть публикацию" : "View post"}</b></div>;
     const avatar = <span className="ig-avatar" aria-hidden="true">{initials}</span>;

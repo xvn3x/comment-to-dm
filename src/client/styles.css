@@ -329,7 +329,7 @@ body:has(.rule-editor-layout) .page-title h1 { font-size: clamp(1.9rem, 3vw, 2.3
 .preview-heading strong { font-size: .78rem; letter-spacing: .02em; text-transform: uppercase; }
 .preview-heading span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .68rem; }
 .preview-heading svg { width: 14px; }
-.phone-preview { display: flex; aspect-ratio: 1170 / 2532; container-type: inline-size; overflow: hidden; flex-direction: column; color: #f5f5f7; background: #0c0f13; border-radius: 7cqw; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.phone-preview { display: flex; aspect-ratio: 1170 / 2532; container-type: inline-size; overflow: hidden; flex-direction: column; color: #f5f5f7; background: #0c0f13; border-radius: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .phone-status { display: flex; height: 13cqw; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 0 5.1cqw 0 7.7cqw; }
 .phone-status > strong { font-family: inherit; font-size: 4.45cqw; font-weight: 600; letter-spacing: -.08cqw; }
 .phone-status-icons { display: flex; align-items: center; gap: 2.2cqw; }
@@ -371,6 +371,7 @@ body:has(.rule-editor-layout) .page-title h1 { font-size: clamp(1.9rem, 3vw, 2.3
 .phone-input > span { display: grid; width: 9.5cqw; height: 9.5cqw; color: white; background: #6242f4; border-radius: 50%; place-items: center; }
 .phone-input svg { width: 5.6cqw; height: 5.6cqw; stroke-width: 2; }
 .phone-input > span svg { width: 5.2cqw; height: 5.2cqw; stroke-width: 2.5; }
+.phone-input > svg:last-child { padding: .7cqw; border: .55cqw solid currentColor; border-radius: 50%; }
 .phone-input em { overflow: hidden; color: #a4a7af; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .phone-home-indicator { width: 35.5cqw; height: 1.35cqw; flex: 0 0 auto; margin: 8cqw auto 2.5cqw; background: #fff; border-radius: 99px; }
 .preview-note { margin: 13px 0 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
