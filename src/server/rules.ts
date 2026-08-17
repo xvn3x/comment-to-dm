@@ -10,6 +10,7 @@ export type RuleRecord = {
   keywords: string[];
   public_reply_enabled: boolean;
   public_replies: string[];
+  direct_message_enabled: boolean;
   dm_text: string;
   button_text: string | null;
   button_url: string | null;

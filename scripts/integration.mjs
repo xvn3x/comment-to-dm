@@ -134,6 +134,43 @@ try {
   assert.equal(delivered.length, 2);
   assert.ok(delivered.every((job) => job.attempts === 1), "Leader lease must prevent duplicate dispatch attempts");
 
+  const emptyActionRule = await request("/api/rules", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({
+      name: "Invalid empty action", active: true, priority: 20, triggerType: "comment",
+      targetScope: "all", mediaId: null, matchMode: "contains", keywords: ["ничего"],
+      publicReplyEnabled: false, publicReplies: [], directMessageEnabled: false, dmText: "",
+      buttonText: null, buttonUrl: null,
+    }),
+  });
+  assert.equal(emptyActionRule.response.status, 400, "A comment rule must have at least one enabled action");
+
+  const publicOnlyRule = await request("/api/rules", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({
+      name: "Comment reply only", active: true, priority: 20, triggerType: "comment",
+      targetScope: "all", mediaId: null, matchMode: "contains", keywords: ["ответ"],
+      publicReplyEnabled: true, publicReplies: ["Спасибо за комментарий!"],
+      directMessageEnabled: false, dmText: "", buttonText: null, buttonUrl: null,
+    }),
+  });
+  assert.equal(publicOnlyRule.response.status, 201);
+  assert.equal(publicOnlyRule.body.direct_message_enabled, false);
+  const publicOnlyComment = await request("/api/mock/comment", {
+    method: "POST", headers: auth,
+    body: JSON.stringify({ text: "Нужен только ответ", mediaId: "demo-reel-2", username: "public_only_user" }),
+  });
+  assert.equal(publicOnlyComment.body.result, "queued");
+  let publicOnlyEvent;
+  const publicOnlyDeadline = Date.now() + 10_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    [publicOnlyEvent] = await sql`SELECT id, status FROM events WHERE username = 'public_only_user' ORDER BY created_at DESC LIMIT 1`;
+  } while (publicOnlyEvent?.status !== "sent" && Date.now() < publicOnlyDeadline);
+  assert.equal(publicOnlyEvent.status, "sent");
+  const publicOnlyJobs = await sql`SELECT kind FROM jobs WHERE event_id = ${publicOnlyEvent.id}`;
+  assert.deepEqual(publicOnlyJobs.map((job) => job.kind), ["public_reply"]);
+
   const directRule = await request("/api/rules", {
     method: "POST", headers: auth,
     body: JSON.stringify({

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS rules (
   keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
   public_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   public_replies JSONB NOT NULL DEFAULT '[]'::jsonb,
+  direct_message_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   dm_text TEXT NOT NULL,
   button_text TEXT,
   button_url TEXT,
@@ -290,6 +291,12 @@ const migrations = [
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+    `,
+  },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE rules ADD COLUMN IF NOT EXISTS direct_message_enabled BOOLEAN NOT NULL DEFAULT TRUE;
     `,
   },
 ];

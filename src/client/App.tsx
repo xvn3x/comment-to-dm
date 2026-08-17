@@ -13,6 +13,7 @@ type Rule = {
   keywords: string[];
   public_reply_enabled: boolean;
   public_replies: string[];
+  direct_message_enabled: boolean;
   dm_text: string;
   button_text: string | null;
   button_url: string | null;
@@ -100,6 +101,7 @@ type RuleForm = {
   keywords: string;
   publicReplyEnabled: boolean;
   publicReplies: string;
+  directMessageEnabled: boolean;
   dmText: string;
   buttonText: string;
   buttonUrl: string;
@@ -123,6 +125,7 @@ const emptyRule: RuleForm = {
   keywords: "гайд",
   publicReplyEnabled: true,
   publicReplies: "Отправили информацию в Direct ✉️\nПроверьте Direct — всё уже там 🙌",
+  directMessageEnabled: true,
   dmText: "Спасибо за комментарий! Нажмите кнопку ниже, чтобы получить материал.",
   buttonText: "Получить гайд",
   buttonUrl: "https://example.com/guide",
@@ -180,6 +183,7 @@ export function App() {
   const activeRules = useMemo(() => dashboard?.rules.filter((item) => item.active).length ?? 0, [dashboard]);
   const healthState = dashboard?.connection.health_state ?? "healthy";
   const healthBlocked = ["reauth_required", "permission_required", "restricted", "misconfigured"].includes(healthState);
+  const ruleDirectEnabled = rule.triggerType !== "comment" || rule.directMessageEnabled;
 
   async function refresh() {
     const data = await api<Dashboard>("/api/dashboard");
@@ -297,12 +301,16 @@ export function App() {
       keywords: rule.matchMode === "any" ? [] : rule.keywords.split(",").map((word) => word.trim()).filter(Boolean),
       publicReplyEnabled: rule.triggerType === "comment" && rule.publicReplyEnabled,
       publicReplies: rule.triggerType === "comment" && rule.publicReplyEnabled ? rule.publicReplies.split("\n").map((text) => text.trim()).filter(Boolean).slice(0, 10) : [],
-      buttonText: rule.buttonText || null,
-      buttonUrl: rule.buttonUrl || null,
-      followGatePrompt: rule.followGateEnabled ? rule.followGatePrompt : null,
-      followGateButtonText: rule.followGateEnabled ? rule.followGateButtonText : null,
-      followGateRetryText: rule.followGateEnabled ? rule.followGateRetryText : null,
-      followUpText: rule.followUpEnabled ? rule.followUpText : null,
+      directMessageEnabled: rule.triggerType === "comment" ? rule.directMessageEnabled : true,
+      dmText: ruleDirectEnabled ? rule.dmText : "",
+      buttonText: ruleDirectEnabled ? rule.buttonText || null : null,
+      buttonUrl: ruleDirectEnabled ? rule.buttonUrl || null : null,
+      followGateEnabled: ruleDirectEnabled && rule.followGateEnabled,
+      followGatePrompt: ruleDirectEnabled && rule.followGateEnabled ? rule.followGatePrompt : null,
+      followGateButtonText: ruleDirectEnabled && rule.followGateEnabled ? rule.followGateButtonText : null,
+      followGateRetryText: ruleDirectEnabled && rule.followGateEnabled ? rule.followGateRetryText : null,
+      followUpEnabled: ruleDirectEnabled && rule.followUpEnabled,
+      followUpText: ruleDirectEnabled && rule.followUpEnabled ? rule.followUpText : null,
     };
     try {
       await api(editingId ? `/api/rules/${editingId}` : "/api/rules", {
@@ -322,6 +330,7 @@ export function App() {
       name: item.name, active: item.active, priority: item.priority, triggerType: item.trigger_type, targetScope: item.target_scope,
       mediaId: item.media_id ?? "", matchMode: item.match_mode, keywords: item.keywords.join(", "),
       publicReplyEnabled: item.public_reply_enabled, publicReplies: item.public_replies.join("\n"),
+      directMessageEnabled: item.direct_message_enabled,
       dmText: item.dm_text, buttonText: item.button_text ?? "", buttonUrl: item.button_url ?? "",
       followGateEnabled: item.follow_gate_enabled, followGatePrompt: item.follow_gate_prompt ?? emptyRule.followGatePrompt,
       followGateButtonText: item.follow_gate_button_text ?? emptyRule.followGateButtonText,
@@ -379,7 +388,7 @@ export function App() {
       <main className="content">
         {error && <div className="notice error-notice">{error}<button onClick={() => setError("")}>×</button></div>}
         <section className="hero-row">
-          <div><p className="eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</p><h1>Автоматизации</h1><p className="muted">Комментарии, входящие Direct и реакции на Stories → нужный сценарий в Direct.</p></div>
+          <div><p className="eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</p><h1>Автоматизации</h1><p className="muted">Комментарии, входящие Direct и реакции на Stories → автоматический ответ и нужный сценарий.</p></div>
           <button className="primary" onClick={() => { setEditingId(null); setRule(emptyRule); setShowRule(true); }}>+ Создать правило</button>
         </section>
 
@@ -410,7 +419,7 @@ export function App() {
           <div className="queue-grid">
             <div><span>Всего в очереди</span><strong>{dashboard?.queue.pending ?? 0}</strong></div>
             <div><span>Direct</span><strong>{dashboard?.queue.private_pending ?? 0}</strong></div>
-            <div><span>Публичные ответы</span><strong>{dashboard?.queue.public_pending ?? 0}</strong></div>
+            <div><span>Ответы на комментарии</span><strong>{dashboard?.queue.public_pending ?? 0}</strong></div>
             <div><span>Скорость API</span><strong>{(dashboard?.queue.throughput_per_minute ?? 0).toFixed(1)} / мин</strong></div>
           </div>
           {(dashboard?.queue.pending ?? 0) > 0 && <div className="queue-details">
@@ -456,7 +465,7 @@ export function App() {
           {!dashboard?.rules.length ? <div className="empty"><strong>Правил пока нет</strong><p>Создайте первое правило для слова «гайд».</p></div> : <div className="rule-list">
             {dashboard.rules.map((item) => <article className="rule-card" key={item.id}>
               <div className={`rule-icon ${item.active ? "active" : ""}`}>{item.active ? "ON" : "OFF"}</div>
-              <div className="rule-main"><div><strong>{item.name}</strong><span className="pill">{triggerLabel(item.trigger_type)}</span>{item.trigger_type === "comment" && <span className="pill">{item.target_scope === "all" ? "Все Post/Reel" : item.media_id}</span>}{item.follow_gate_enabled && <span className="pill">Проверка подписки</span>}{item.follow_up_enabled && <span className="pill">Follow-up через {duration(item.follow_up_delay_minutes * 60)}</span>}</div><p>{item.match_mode === "any" ? item.trigger_type === "comment" ? "Любой комментарий" : "Любое сообщение или реакция" : `Ключи: ${item.keywords.join(", ")}`}</p><small>{item.follow_gate_enabled ? "После подписки" : "Direct"}: {item.dm_text}</small></div>
+              <div className="rule-main"><div><strong>{item.name}</strong><span className="pill">{triggerLabel(item.trigger_type)}</span>{item.trigger_type === "comment" && <span className="pill">{item.target_scope === "all" ? "Все Post/Reel" : item.media_id}</span>}{item.trigger_type === "comment" && !item.direct_message_enabled && <span className="pill">Без Direct</span>}{item.follow_gate_enabled && <span className="pill">Проверка подписки</span>}{item.follow_up_enabled && <span className="pill">Follow-up через {duration(item.follow_up_delay_minutes * 60)}</span>}</div><p>{item.match_mode === "any" ? item.trigger_type === "comment" ? "Любой комментарий" : "Любое сообщение или реакция" : `Ключи: ${item.keywords.join(", ")}`}</p><small>{item.direct_message_enabled ? `${item.follow_gate_enabled ? "После подписки" : "Direct"}: ${item.dm_text}` : `Ответ на комментарий: ${item.public_replies[0] ?? "настроен"}`}</small></div>
               <div className="row-actions"><button className="ghost" onClick={() => editRule(item)}>Изменить</button><button className="ghost danger-text" onClick={() => void removeRule(item.id)}>Удалить</button></div>
             </article>)}
           </div>}
@@ -489,24 +498,27 @@ export function App() {
           <label>Название<input value={rule.name} onChange={(event) => setRule({ ...rule, name: event.target.value })} /></label>
           <label>Что запускает правило<select value={rule.triggerType} onChange={(event) => {
             const triggerType = event.target.value as RuleForm["triggerType"];
-            setRule({ ...rule, triggerType, targetScope: "all", publicReplyEnabled: triggerType === "comment" ? rule.publicReplyEnabled : false, followUpEnabled: triggerType === "comment" && !rule.followGateEnabled ? false : rule.followUpEnabled });
+            setRule({ ...rule, triggerType, targetScope: "all", publicReplyEnabled: triggerType === "comment" ? rule.publicReplyEnabled : false, directMessageEnabled: triggerType === "comment" ? rule.directMessageEnabled : true, followUpEnabled: triggerType === "comment" && !rule.followGateEnabled ? false : rule.followUpEnabled });
           }}><option value="comment">Комментарий под Post или Reel</option><option value="direct_message">Входящее сообщение в Direct</option><option value="story_reply">Ответ или реакция на Story</option></select></label>
           <div className="two-cols">{rule.triggerType === "comment" && <label>Публикации<select value={rule.targetScope} onChange={(event) => setRule({ ...rule, targetScope: event.target.value as RuleForm["targetScope"] })}><option value="all">Все Post и Reel</option><option value="specific">Конкретный Post/Reel</option></select></label>}<label>Совпадение<select value={rule.matchMode} onChange={(event) => setRule({ ...rule, matchMode: event.target.value as RuleForm["matchMode"] })}><option value="contains">Содержит слово</option><option value="exact">Точное совпадение</option><option value="any">{rule.triggerType === "comment" ? "Любой комментарий" : rule.triggerType === "story_reply" ? "Любой ответ или реакция" : "Любое сообщение"}</option></select></label></div>
           {rule.triggerType === "comment" && rule.targetScope === "specific" && <label>Post или Reel<select value={rule.mediaId} onChange={(event) => setRule({ ...rule, mediaId: event.target.value })}><option value="">Выберите публикацию</option>{media.map((item) => <option value={item.id} key={item.id}>{`${item.mediaType === "VIDEO" ? "Reel" : "Post"} · ${(item.caption || "Без подписи").slice(0, 70)}`}</option>)}</select>{!connected && <span>Сначала подключите Instagram.</span>}</label>}
           {rule.matchMode !== "any" && <label>Ключевые слова <span>через запятую</span><input value={rule.keywords} onChange={(event) => setRule({ ...rule, keywords: event.target.value })} /></label>}
-          {rule.triggerType === "comment" && <label className="check"><input type="checkbox" checked={rule.publicReplyEnabled} onChange={(event) => setRule({ ...rule, publicReplyEnabled: event.target.checked })} />Публично ответить под комментарием</label>}
-          {rule.triggerType === "comment" && rule.publicReplyEnabled && <label>Варианты публичного ответа <span>каждый с новой строки, максимум 10</span><textarea rows={5} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}
-          <label className="check"><input type="checkbox" checked={rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followGateEnabled: event.target.checked, followUpEnabled: !event.target.checked && rule.triggerType === "comment" ? false : rule.followUpEnabled })} />Выдать материал только после проверки подписки</label>
-          {rule.followGateEnabled && <>
+          {rule.triggerType === "comment" && <label className="check"><input type="checkbox" checked={rule.publicReplyEnabled} onChange={(event) => setRule({ ...rule, publicReplyEnabled: event.target.checked })} />Отвечать на комментарий</label>}
+          {rule.triggerType === "comment" && rule.publicReplyEnabled && <label>Варианты ответа на комментарий <span>каждый с новой строки, максимум 10</span><textarea rows={5} value={rule.publicReplies} onChange={(event) => setRule({ ...rule, publicReplies: event.target.value })} /></label>}
+          {rule.triggerType === "comment" && <label className="check"><input type="checkbox" checked={rule.directMessageEnabled} onChange={(event) => setRule({ ...rule, directMessageEnabled: event.target.checked, followGateEnabled: event.target.checked && rule.followGateEnabled, followUpEnabled: event.target.checked && rule.followUpEnabled })} />Отправлять сообщение в Direct</label>}
+          {ruleDirectEnabled && <label className="check"><input type="checkbox" checked={rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followGateEnabled: event.target.checked, followUpEnabled: !event.target.checked && rule.triggerType === "comment" ? false : rule.followUpEnabled })} />Выдать материал только после проверки подписки</label>}
+          {ruleDirectEnabled && rule.followGateEnabled && <>
             <label>Первое сообщение в Direct<textarea rows={3} value={rule.followGatePrompt} onChange={(event) => setRule({ ...rule, followGatePrompt: event.target.value })} /></label>
             <label>Текст кнопки проверки <span>до 20 символов</span><input maxLength={20} value={rule.followGateButtonText} onChange={(event) => setRule({ ...rule, followGateButtonText: event.target.value })} /></label>
             <label>Если пользователь ещё не подписан<textarea rows={3} value={rule.followGateRetryText} onChange={(event) => setRule({ ...rule, followGateRetryText: event.target.value })} /></label>
           </>}
-          <label>{rule.followGateEnabled ? "Сообщение после подтверждения подписки" : "Сообщение в Direct"}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>
-          <div className="two-cols"><label>Текст кнопки материала<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>HTTPS-ссылка на материал<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div>
-          <label className="check"><input type="checkbox" checked={rule.followUpEnabled} disabled={rule.triggerType === "comment" && !rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followUpEnabled: event.target.checked })} />Напомнить, если пользователь не открыл материал</label>
-          {rule.triggerType === "comment" && !rule.followGateEnabled && <p className="muted">Для комментария follow-up доступен вместе с проверкой подписки: нажатие postback-кнопки открывает разрешённое Meta окно сообщений.</p>}
-          {rule.followUpEnabled && <><label>Через сколько минут <span>не более 22 часов</span><input type="number" min={1} max={1320} value={rule.followUpDelayMinutes} onChange={(event) => setRule({ ...rule, followUpDelayMinutes: Number(event.target.value) })} /></label><label>Текст напоминания<textarea rows={3} value={rule.followUpText} onChange={(event) => setRule({ ...rule, followUpText: event.target.value })} /></label><p className="muted">Ссылка будет отслеживаться только вашим сервером. Если материал уже открыт, напоминание автоматически отменится.</p></>}
+          {ruleDirectEnabled && <>
+            <label>{rule.followGateEnabled ? "Сообщение после подтверждения подписки" : "Сообщение в Direct"}<textarea rows={4} value={rule.dmText} onChange={(event) => setRule({ ...rule, dmText: event.target.value })} /></label>
+            <div className="two-cols"><label>Текст кнопки материала<input value={rule.buttonText} onChange={(event) => setRule({ ...rule, buttonText: event.target.value })} /></label><label>HTTPS-ссылка на материал<input type="url" value={rule.buttonUrl} onChange={(event) => setRule({ ...rule, buttonUrl: event.target.value })} /></label></div>
+            <label className="check"><input type="checkbox" checked={rule.followUpEnabled} disabled={rule.triggerType === "comment" && !rule.followGateEnabled} onChange={(event) => setRule({ ...rule, followUpEnabled: event.target.checked })} />Напомнить, если пользователь не открыл материал</label>
+            {rule.triggerType === "comment" && !rule.followGateEnabled && <p className="muted">Для комментария follow-up доступен вместе с проверкой подписки: нажатие postback-кнопки открывает разрешённое Meta окно сообщений.</p>}
+            {rule.followUpEnabled && <><label>Через сколько минут <span>не более 22 часов</span><input type="number" min={1} max={1320} value={rule.followUpDelayMinutes} onChange={(event) => setRule({ ...rule, followUpDelayMinutes: Number(event.target.value) })} /></label><label>Текст напоминания<textarea rows={3} value={rule.followUpText} onChange={(event) => setRule({ ...rule, followUpText: event.target.value })} /></label><p className="muted">Ссылка будет отслеживаться только вашим сервером. Если материал уже открыт, напоминание автоматически отменится.</p></>}
+          </>}
           <label className="check"><input type="checkbox" checked={rule.active} onChange={(event) => setRule({ ...rule, active: event.target.checked })} />Правило активно</label>
           <div className="form-actions end"><button type="button" className="secondary" onClick={() => setShowRule(false)}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить правило"}</button></div>
         </form>

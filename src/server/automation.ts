@@ -30,7 +30,9 @@ export async function enqueueComment(
   if (!rule) return "no_match";
 
   const eventId = randomUUID();
-  const trackingToken = rule.follow_up_enabled && rule.follow_gate_enabled ? randomUUID() : undefined;
+  const trackingToken = rule.direct_message_enabled && rule.follow_up_enabled && rule.follow_gate_enabled
+    ? randomUUID()
+    : undefined;
   const finalButtonUrl = trackingToken
     ? trackedMaterialUrl(options.publicBaseUrl, trackingToken)
     : rule.button_url;
@@ -71,7 +73,7 @@ export async function enqueueComment(
         VALUES (${randomUUID()}, ${eventId}, 'public_reply', ${tx.json({ commentId: comment.commentId, message: publicMessage })})
       `;
     }
-    if (trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
+    if (rule.direct_message_enabled && trackingToken && rule.button_url && rule.button_text && rule.follow_up_text) {
       await tx`
         INSERT INTO follow_up_sessions (
           event_id, tracking_token, destination_url, material_button_text,
@@ -82,7 +84,7 @@ export async function enqueueComment(
         )
       `;
     }
-    if (rule.follow_gate_enabled) {
+    if (rule.direct_message_enabled && rule.follow_gate_enabled) {
       await tx`
         INSERT INTO follow_gate_sessions (
           event_id, final_message, final_button_text, final_button_url,
@@ -93,22 +95,24 @@ export async function enqueueComment(
         )
       `;
     }
-    await tx`
-      INSERT INTO jobs (id, event_id, kind, payload, next_attempt_at)
-      VALUES (
-        ${randomUUID()}, ${eventId}, 'private_reply',
-        ${tx.json({
-          commentId: comment.commentId,
-          message: rule.follow_gate_enabled ? rule.follow_gate_prompt : rule.dm_text,
-          button: !rule.follow_gate_enabled && rule.button_text && rule.button_url
-            ? { title: rule.button_text, url: rule.button_url } : undefined,
-          quickReply: rule.follow_gate_enabled
-            ? { title: rule.follow_gate_button_text, payload: `follow_gate:${eventId}` } : undefined,
-          followGate: rule.follow_gate_enabled,
-        })},
-        NOW()
-      )
-    `;
+    if (rule.direct_message_enabled) {
+      await tx`
+        INSERT INTO jobs (id, event_id, kind, payload, next_attempt_at)
+        VALUES (
+          ${randomUUID()}, ${eventId}, 'private_reply',
+          ${tx.json({
+            commentId: comment.commentId,
+            message: rule.follow_gate_enabled ? rule.follow_gate_prompt : rule.dm_text,
+            button: !rule.follow_gate_enabled && rule.button_text && rule.button_url
+              ? { title: rule.button_text, url: rule.button_url } : undefined,
+            quickReply: rule.follow_gate_enabled
+              ? { title: rule.follow_gate_button_text, payload: `follow_gate:${eventId}` } : undefined,
+            followGate: rule.follow_gate_enabled,
+          })},
+          NOW()
+        )
+      `;
+    }
     return "queued" as const;
   });
 }

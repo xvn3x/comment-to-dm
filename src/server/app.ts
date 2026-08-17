@@ -45,7 +45,8 @@ const ruleSchema = z.object({
   keywords: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   publicReplyEnabled: z.boolean().default(true),
   publicReplies: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
-  dmText: z.string().trim().min(1).max(640),
+  directMessageEnabled: z.boolean().default(true),
+  dmText: z.string().trim().max(640).default(""),
   buttonText: z.string().trim().min(1).max(20).nullable().optional(),
   buttonUrl: z.string().url().refine((url) => url.startsWith("https://"), "Only HTTPS links are allowed").nullable().optional(),
   followGateEnabled: z.boolean().default(false),
@@ -56,6 +57,7 @@ const ruleSchema = z.object({
   followUpDelayMinutes: z.number().int().min(1).max(1320).default(60),
   followUpText: z.string().trim().min(1).max(640).nullable().optional(),
 }).superRefine((value, context) => {
+  const directMessageEnabled = value.triggerType !== "comment" || value.directMessageEnabled;
   if (value.triggerType === "direct_message" && value.targetScope !== "all") {
     context.addIssue({ code: "custom", path: ["targetScope"], message: "Direct message rules apply to all conversations" });
   }
@@ -71,13 +73,22 @@ const ruleSchema = z.object({
   if (value.publicReplyEnabled && !value.publicReplies.length) {
     context.addIssue({ code: "custom", path: ["publicReplies"], message: "Add a public reply" });
   }
-  if (Boolean(value.buttonText) !== Boolean(value.buttonUrl)) {
+  if (value.triggerType === "comment" && !value.publicReplyEnabled && !directMessageEnabled) {
+    context.addIssue({ code: "custom", path: ["directMessageEnabled"], message: "Enable a comment reply or a Direct message" });
+  }
+  if (directMessageEnabled && !value.dmText) {
+    context.addIssue({ code: "custom", path: ["dmText"], message: "Add a Direct message" });
+  }
+  if (directMessageEnabled && Boolean(value.buttonText) !== Boolean(value.buttonUrl)) {
     context.addIssue({ code: "custom", path: ["buttonText"], message: "Button text and URL must be provided together" });
   }
   if (Buffer.byteLength(value.dmText, "utf8") > 1000) {
     context.addIssue({ code: "custom", path: ["dmText"], message: "Direct message exceeds 1000 UTF-8 bytes" });
   }
-  if (value.followGateEnabled) {
+  if (!directMessageEnabled && (value.followGateEnabled || value.followUpEnabled)) {
+    context.addIssue({ code: "custom", path: ["directMessageEnabled"], message: "Direct must be enabled for follower checks and follow-ups" });
+  }
+  if (directMessageEnabled && value.followGateEnabled) {
     if (!value.followGatePrompt) context.addIssue({ code: "custom", path: ["followGatePrompt"], message: "Add the first Direct message" });
     if (!value.followGateButtonText) context.addIssue({ code: "custom", path: ["followGateButtonText"], message: "Add the check button title" });
     if (!value.followGateRetryText) context.addIssue({ code: "custom", path: ["followGateRetryText"], message: "Add the retry message" });
@@ -85,7 +96,7 @@ const ruleSchema = z.object({
       if (text && Buffer.byteLength(text, "utf8") > 1000) context.addIssue({ code: "custom", path: [path], message: "Message exceeds 1000 UTF-8 bytes" });
     }
   }
-  if (value.followUpEnabled) {
+  if (directMessageEnabled && value.followUpEnabled) {
     if (value.triggerType === "comment" && !value.followGateEnabled) {
       context.addIssue({ code: "custom", path: ["followUpEnabled"], message: "Comment follow-ups require the follower-check postback to open the messaging window" });
     }
@@ -106,18 +117,23 @@ const ruleSchema = z.object({
 });
 
 function toRuleValues(value: z.infer<typeof ruleSchema>) {
+  const directMessageEnabled = value.triggerType !== "comment" || value.directMessageEnabled;
   return {
     ...value,
     targetScope: value.triggerType === "direct_message" ? "all" as const : value.targetScope,
     mediaId: value.targetScope === "all" ? null : value.mediaId ?? null,
     publicReplyEnabled: value.triggerType === "comment" ? value.publicReplyEnabled : false,
     publicReplies: value.triggerType === "comment" && value.publicReplyEnabled ? value.publicReplies : [],
-    buttonText: value.buttonText || null,
-    buttonUrl: value.buttonUrl || null,
-    followGatePrompt: value.followGateEnabled ? value.followGatePrompt || null : null,
-    followGateButtonText: value.followGateEnabled ? value.followGateButtonText || null : null,
-    followGateRetryText: value.followGateEnabled ? value.followGateRetryText || null : null,
-    followUpText: value.followUpEnabled ? value.followUpText || null : null,
+    directMessageEnabled,
+    dmText: directMessageEnabled ? value.dmText : "",
+    buttonText: directMessageEnabled ? value.buttonText || null : null,
+    buttonUrl: directMessageEnabled ? value.buttonUrl || null : null,
+    followGateEnabled: directMessageEnabled && value.followGateEnabled,
+    followGatePrompt: directMessageEnabled && value.followGateEnabled ? value.followGatePrompt || null : null,
+    followGateButtonText: directMessageEnabled && value.followGateEnabled ? value.followGateButtonText || null : null,
+    followGateRetryText: directMessageEnabled && value.followGateEnabled ? value.followGateRetryText || null : null,
+    followUpEnabled: directMessageEnabled && value.followUpEnabled,
+    followUpText: directMessageEnabled && value.followUpEnabled ? value.followUpText || null : null,
   };
 }
 
@@ -510,13 +526,13 @@ export async function buildApp(sql: Db, config: AppConfig) {
     const rows = await sql`
       INSERT INTO rules (
         id, name, active, priority, trigger_type, target_scope, media_id, match_mode, keywords,
-        public_reply_enabled, public_replies, dm_text, button_text, button_url,
+        public_reply_enabled, public_replies, direct_message_enabled, dm_text, button_text, button_url,
         follow_gate_enabled, follow_gate_prompt, follow_gate_button_text, follow_gate_retry_text,
         follow_up_enabled, follow_up_delay_minutes, follow_up_text
       ) VALUES (
         ${randomUUID()}, ${value.name}, ${value.active}, ${value.priority}, ${value.triggerType}, ${value.targetScope}, ${value.mediaId},
         ${value.matchMode}, ${sql.json(value.keywords)}, ${value.publicReplyEnabled}, ${sql.json(value.publicReplies)},
-        ${value.dmText}, ${value.buttonText}, ${value.buttonUrl}, ${value.followGateEnabled},
+        ${value.directMessageEnabled}, ${value.dmText}, ${value.buttonText}, ${value.buttonUrl}, ${value.followGateEnabled},
         ${value.followGatePrompt}, ${value.followGateButtonText}, ${value.followGateRetryText},
         ${value.followUpEnabled}, ${value.followUpDelayMinutes}, ${value.followUpText}
       ) RETURNING *
@@ -534,7 +550,8 @@ export async function buildApp(sql: Db, config: AppConfig) {
         trigger_type = ${value.triggerType},
         target_scope = ${value.targetScope}, media_id = ${value.mediaId}, match_mode = ${value.matchMode},
         keywords = ${sql.json(value.keywords)}, public_reply_enabled = ${value.publicReplyEnabled},
-        public_replies = ${sql.json(value.publicReplies)}, dm_text = ${value.dmText},
+        public_replies = ${sql.json(value.publicReplies)}, direct_message_enabled = ${value.directMessageEnabled},
+        dm_text = ${value.dmText},
         button_text = ${value.buttonText}, button_url = ${value.buttonUrl},
         follow_gate_enabled = ${value.followGateEnabled}, follow_gate_prompt = ${value.followGatePrompt},
         follow_gate_button_text = ${value.followGateButtonText}, follow_gate_retry_text = ${value.followGateRetryText},

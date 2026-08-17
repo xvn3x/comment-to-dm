@@ -15,6 +15,7 @@ const baseRule: RuleRecord = {
   keywords: ["гайд"],
   public_reply_enabled: true,
   public_replies: ["Отправили в Direct"],
+  direct_message_enabled: true,
   dm_text: "Ваш гайд",
   button_text: "Получить",
   button_url: "https://example.com",

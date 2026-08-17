@@ -39,6 +39,13 @@ CREATE TABLE jobs (
   UNIQUE (event_id, kind)
 );
 INSERT INTO meta_connection (singleton, app_id, username) VALUES (TRUE, 'preserved-app', 'preserved-account');
+INSERT INTO rules (
+  id, name, target_scope, media_id, match_mode, keywords,
+  public_reply_enabled, public_replies, dm_text
+) VALUES (
+  '00000000-0000-4000-8000-000000000099', 'Preserved rule', 'all', NULL, 'contains', '["guide"]'::jsonb,
+  TRUE, '["Sent to Direct"]'::jsonb, 'Legacy Direct message'
+);
 `;
 
 const seed = postgres(databaseUrl, { max: 1 });
@@ -52,20 +59,29 @@ try {
   assert.equal(connection[0].username, "preserved-account");
   assert.equal(connection[0].health_state, "healthy");
   assert.equal(connection[0].surge_mode, false);
-  const migrations = await sql`SELECT version FROM schema_migrations WHERE version IN (3, 4, 5, 6) ORDER BY version`;
-  assert.deepEqual(migrations.map((row) => row.version), [3, 4, 5, 6]);
+  const [preservedRule] = await sql`
+    SELECT name, direct_message_enabled, dm_text FROM rules
+    WHERE id = '00000000-0000-4000-8000-000000000099'
+  `;
+  assert.deepEqual(preservedRule, {
+    name: "Preserved rule",
+    direct_message_enabled: true,
+    dm_text: "Legacy Direct message",
+  });
+  const migrations = await sql`SELECT version FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7) ORDER BY version`;
+  assert.deepEqual(migrations.map((row) => row.version), [3, 4, 5, 6, 7]);
   const rulesColumns = await sql`
     SELECT column_name FROM information_schema.columns
-    WHERE table_name = 'rules' AND column_name = 'follow_gate_enabled'
+    WHERE table_name = 'rules' AND column_name IN ('follow_gate_enabled', 'direct_message_enabled')
   `;
-  assert.equal(rulesColumns.length, 1);
+  assert.equal(rulesColumns.length, 2);
   const sessions = await sql`SELECT to_regclass('public.follow_gate_sessions') AS name`;
   assert.equal(sessions[0].name, 'follow_gate_sessions');
   const followUps = await sql`SELECT to_regclass('public.follow_up_sessions') AS name`;
   assert.equal(followUps[0].name, 'follow_up_sessions');
   const lease = await sql`SELECT singleton FROM worker_leases WHERE singleton = TRUE`;
   assert.equal(lease.length, 1);
-  console.log("Migration v0.2 → v0.5.0 passed without losing Meta connection data.");
+  console.log("Migration v0.2 → v0.5.1 passed without losing Meta connection data.");
 } finally {
   await sql.end();
 }
