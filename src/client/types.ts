@@ -75,7 +75,6 @@ export type Dashboard = {
   events: EventItem[];
   stats: { total_24h: number; sent_24h: number; failed_24h: number; deliveries_24h: number };
   analytics: {
-    hourly: Array<{ hour: string; deliveries: number }>;
     links: { delivered_24h: number; opened_24h: number };
   };
   queue: {
@@ -140,3 +139,31 @@ export type RuleForm = {
   followUpDelayMinutes: number;
   followUpText: string;
 };
+
+export type DeliveryKind = "public_reply" | "private_reply" | "direct_message" | "follow_up";
+
+export type DeliveryBucket = { start: string; future: boolean; deliveries: number; byKind: Record<DeliveryKind, number> };
+
+export type Analytics = {
+  from: string;
+  to: string;
+  unit: "hour" | "day";
+  retentionDays: number;
+  totals: {
+    deliveries: number;
+    byKind: Record<DeliveryKind, number>;
+    failed: number;
+    linksDelivered: number;
+    linksOpened: number;
+    followGatePassed: number;
+    followGatePending: number;
+    followUpSent: number;
+    followUpClicked: number;
+  };
+  buckets: DeliveryBucket[];
+  rules: Array<{ id: string; triggered: number; direct: number; opened: number; failed: number }>;
+};
+
+export type PeriodKind = "today" | "date" | "range" | "all";
+
+export type Period = { kind: PeriodKind; date: string; from: string; to: string };

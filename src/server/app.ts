@@ -8,6 +8,7 @@ import rateLimit from "@fastify/rate-limit";
 import staticPlugin from "@fastify/static";
 import rawBody from "fastify-raw-body";
 import { z } from "zod";
+import { AnalyticsRangeError, resolveRange, type ResolvedRange } from "./analytics.js";
 import type { AppConfig } from "./config.js";
 import type { Db } from "./db.js";
 import {
@@ -297,14 +298,6 @@ export async function buildApp(sql: Db, config: AppConfig) {
         ) AS deliveries_24h
       FROM events
     `;
-    const hourly = await sql`
-      SELECT date_trunc('hour', updated_at) AS hour, COUNT(*)::int AS deliveries
-      FROM jobs
-      WHERE status = 'sent' AND kind <> 'follow_check'
-        AND updated_at >= date_trunc('hour', NOW()) - INTERVAL '23 hours'
-      GROUP BY date_trunc('hour', updated_at)
-      ORDER BY hour ASC
-    `;
     const linkStats = await sql`
       SELECT
         COUNT(*) FILTER (WHERE delivered_at >= NOW() - INTERVAL '24 hours')::int AS delivered_24h,
@@ -354,7 +347,6 @@ export async function buildApp(sql: Db, config: AppConfig) {
       events,
       stats: stats[0],
       analytics: {
-        hourly,
         links: linkStats[0] ?? { delivered_24h: 0, opened_24h: 0 },
       },
       queue: queue[0],
@@ -365,6 +357,104 @@ export async function buildApp(sql: Db, config: AppConfig) {
         dataDeletion: `${config.PUBLIC_BASE_URL}/api/meta/data-deletion`,
       },
       metaMode: config.META_MODE,
+    };
+  });
+
+  app.get("/api/analytics", { preHandler: requireAuth }, async (request, reply) => {
+    const parsed = z.object({ from: z.string().min(1), to: z.string().min(1) }).safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_range" });
+    let range: ResolvedRange;
+    try {
+      range = resolveRange(parsed.data.from, parsed.data.to);
+    } catch (caught) {
+      return reply.code(400).send({ error: caught instanceof AnalyticsRangeError ? caught.code : "invalid_range" });
+    }
+    const bucketSeconds = range.sizeMs / 1000;
+    const [deliveryRows, failedRows, linkRows, gateRows, followUpRows, ruleRows] = await Promise.all([
+      sql`
+        SELECT FLOOR(EXTRACT(EPOCH FROM (updated_at - ${range.from})) / ${bucketSeconds})::int AS bucket,
+               kind, COUNT(*)::int AS total
+        FROM jobs
+        WHERE status = 'sent' AND kind <> 'follow_check'
+          AND updated_at >= ${range.from} AND updated_at < ${range.to}
+        GROUP BY 1, 2
+      `,
+      sql`
+        SELECT COUNT(*)::int AS failed FROM events
+        WHERE status = 'failed' AND created_at >= ${range.from} AND created_at < ${range.to}
+      `,
+      sql`
+        SELECT COUNT(*)::int AS delivered,
+               COUNT(*) FILTER (WHERE first_clicked_at IS NOT NULL)::int AS opened
+        FROM link_tracking
+        WHERE delivered_at >= ${range.from} AND delivered_at < ${range.to}
+      `,
+      sql`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'delivered')::int AS passed,
+          COUNT(*) FILTER (WHERE status <> 'delivered')::int AS pending
+        FROM follow_gate_sessions
+        WHERE created_at >= ${range.from} AND created_at < ${range.to}
+      `,
+      sql`
+        SELECT
+          COUNT(*)::int AS sent,
+          COUNT(*) FILTER (WHERE clicked_at IS NOT NULL AND clicked_at > sent_at)::int AS clicked
+        FROM follow_up_sessions
+        WHERE sent_at >= ${range.from} AND sent_at < ${range.to}
+      `,
+      sql`
+        SELECT r.id,
+          COUNT(DISTINCT e.id)::int AS triggered,
+          COUNT(DISTINCT e.id) FILTER (
+            WHERE j.status = 'sent' AND j.kind IN ('private_reply', 'direct_message')
+          )::int AS direct,
+          COUNT(DISTINCT e.id) FILTER (WHERE lt.first_clicked_at IS NOT NULL)::int AS opened,
+          COUNT(DISTINCT e.id) FILTER (WHERE e.status = 'failed')::int AS failed
+        FROM rules r
+        LEFT JOIN events e ON e.rule_id = r.id
+          AND e.created_at >= ${range.from} AND e.created_at < ${range.to}
+        LEFT JOIN jobs j ON j.event_id = e.id AND j.status = 'sent'
+        LEFT JOIN link_tracking lt ON lt.event_id = e.id
+        GROUP BY r.id
+      `,
+    ]);
+    const emptyKinds = () => ({ public_reply: 0, private_reply: 0, direct_message: 0, follow_up: 0 });
+    const now = Date.now();
+    const buckets = range.starts.map((start) => ({
+      start: start.toISOString(), future: start.getTime() > now, deliveries: 0, byKind: emptyKinds(),
+    }));
+    const byKind = emptyKinds();
+    let deliveries = 0;
+    for (const row of deliveryRows) {
+      const kind = String(row.kind) as keyof ReturnType<typeof emptyKinds>;
+      if (!(kind in byKind)) continue;
+      const total = Number(row.total);
+      byKind[kind] += total;
+      deliveries += total;
+      const bucket = buckets[Number(row.bucket)];
+      if (!bucket) continue;
+      bucket.deliveries += total;
+      bucket.byKind[kind] += total;
+    }
+    return {
+      from: range.from.toISOString(),
+      to: range.to.toISOString(),
+      unit: range.unit,
+      retentionDays: 30,
+      totals: {
+        deliveries,
+        byKind,
+        failed: failedRows[0]?.failed ?? 0,
+        linksDelivered: linkRows[0]?.delivered ?? 0,
+        linksOpened: linkRows[0]?.opened ?? 0,
+        followGatePassed: gateRows[0]?.passed ?? 0,
+        followGatePending: gateRows[0]?.pending ?? 0,
+        followUpSent: followUpRows[0]?.sent ?? 0,
+        followUpClicked: followUpRows[0]?.clicked ?? 0,
+      },
+      buckets,
+      rules: ruleRows,
     };
   });
 

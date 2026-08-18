@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_recent_idx ON events (created_at DESC);
 CREATE INDEX IF NOT EXISTS events_dedupe_idx ON events (sender_id, media_id, rule_id, status);
 CREATE INDEX IF NOT EXISTS events_rule_recent_idx ON events (rule_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS events_failed_recent_idx ON events (created_at) WHERE status = 'failed';
 
 CREATE TABLE IF NOT EXISTS jobs (
   id UUID PRIMARY KEY,
@@ -124,6 +125,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS jobs_queue_idx ON jobs (status, next_attempt_at, created_at);
 CREATE INDEX IF NOT EXISTS jobs_event_idx ON jobs (event_id, created_at);
+CREATE INDEX IF NOT EXISTS jobs_delivery_analytics_idx ON jobs (updated_at, kind)
+  WHERE status = 'sent' AND kind <> 'follow_check';
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_initial_kind_unique_idx
   ON jobs (event_id, kind) WHERE kind IN ('public_reply', 'private_reply');
 
@@ -145,6 +148,8 @@ CREATE TABLE IF NOT EXISTS follow_gate_sessions (
   CHECK ((final_button_text IS NULL AND final_button_url IS NULL) OR
          (final_button_text IS NOT NULL AND final_button_url IS NOT NULL))
 );
+
+CREATE INDEX IF NOT EXISTS follow_gate_sessions_created_idx ON follow_gate_sessions (created_at, status);
 
 CREATE TABLE IF NOT EXISTS follow_up_sessions (
   event_id UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
@@ -177,6 +182,8 @@ CREATE TABLE IF NOT EXISTS link_tracking (
 
 CREATE INDEX IF NOT EXISTS link_tracking_delivered_idx ON link_tracking (delivered_at DESC);
 CREATE INDEX IF NOT EXISTS link_tracking_clicked_idx ON link_tracking (first_clicked_at DESC);
+CREATE INDEX IF NOT EXISTS follow_up_sessions_sent_idx ON follow_up_sessions (sent_at, clicked_at)
+  WHERE sent_at IS NOT NULL;
 `;
 
 const migrations = [
@@ -345,6 +352,22 @@ const migrations = [
         CASE WHEN f.clicked_at IS NULL THEN 0 ELSE 1 END
       FROM follow_up_sessions f
       ON CONFLICT (event_id) DO NOTHING;
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      CREATE INDEX IF NOT EXISTS jobs_delivery_analytics_idx
+        ON jobs (updated_at, kind)
+        WHERE status = 'sent' AND kind <> 'follow_check';
+      CREATE INDEX IF NOT EXISTS events_failed_recent_idx
+        ON events (created_at)
+        WHERE status = 'failed';
+      CREATE INDEX IF NOT EXISTS follow_gate_sessions_created_idx
+        ON follow_gate_sessions (created_at, status);
+      CREATE INDEX IF NOT EXISTS follow_up_sessions_sent_idx
+        ON follow_up_sessions (sent_at, clicked_at)
+        WHERE sent_at IS NOT NULL;
     `,
   },
 ];

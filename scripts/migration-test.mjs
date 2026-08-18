@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import postgres from "postgres";
 import { createDb } from "../src/server/db.js";
+import { requireDisposableDatabase } from "./test-db-guard.mjs";
 
-const databaseUrl = process.env.INTEGRATION_DATABASE_URL;
-if (!databaseUrl) throw new Error("Set INTEGRATION_DATABASE_URL to a disposable PostgreSQL database.");
+// Скрипт выполняет DROP SCHEMA public CASCADE, поэтому та же защита, что и у integration.
+const { url: databaseUrl } = requireDisposableDatabase({
+  variable: "INTEGRATION_DATABASE_URL",
+  command: "npm run test:migration",
+});
 
 const oldSchema = `
 DROP SCHEMA public CASCADE;
@@ -46,6 +50,16 @@ INSERT INTO rules (
   '00000000-0000-4000-8000-000000000099', 'Preserved rule', 'all', NULL, 'contains', '["guide"]'::jsonb,
   TRUE, '["Sent to Direct"]'::jsonb, 'Legacy Direct message'
 );
+INSERT INTO events (id, comment_id, media_id, sender_id, username, rule_id, status, created_at, processed_at)
+VALUES (
+  '00000000-0000-4000-8000-0000000000a1', 'legacy-comment-1', 'legacy-media', 'legacy-sender', 'legacy_user',
+  '00000000-0000-4000-8000-000000000099', 'sent', NOW() - INTERVAL '2 hours', NOW() - INTERVAL '2 hours'
+);
+INSERT INTO jobs (id, event_id, kind, payload, status, attempts, created_at, updated_at)
+VALUES (
+  '00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-0000000000a1', 'public_reply',
+  '{"message":"legacy"}'::jsonb, 'sent', 1, NOW() - INTERVAL '2 hours', NOW() - INTERVAL '2 hours'
+);
 `;
 
 const seed = postgres(databaseUrl, { max: 1 });
@@ -68,8 +82,8 @@ try {
     direct_message_enabled: true,
     dm_text: "Legacy Direct message",
   });
-  const migrations = await sql`SELECT version FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8) ORDER BY version`;
-  assert.deepEqual(migrations.map((row) => row.version), [3, 4, 5, 6, 7, 8]);
+  const migrations = await sql`SELECT version FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9) ORDER BY version`;
+  assert.deepEqual(migrations.map((row) => row.version), [3, 4, 5, 6, 7, 8, 9]);
   const rulesColumns = await sql`
     SELECT column_name FROM information_schema.columns
     WHERE table_name = 'rules' AND column_name IN ('follow_gate_enabled', 'direct_message_enabled')
@@ -83,6 +97,24 @@ try {
   assert.equal(linkTracking[0].name, 'link_tracking');
   const lease = await sql`SELECT singleton FROM worker_leases WHERE singleton = TRUE`;
   assert.equal(lease.length, 1);
+  const analyticsIndexes = await sql`
+    SELECT indexname FROM pg_indexes
+    WHERE schemaname = 'public' AND indexname IN (
+      'jobs_delivery_analytics_idx', 'events_failed_recent_idx',
+      'follow_gate_sessions_created_idx', 'follow_up_sessions_sent_idx',
+      'link_tracking_delivered_idx'
+    )
+    ORDER BY indexname
+  `;
+  assert.deepEqual(analyticsIndexes.map((row) => row.indexname), [
+    "events_failed_recent_idx", "follow_gate_sessions_created_idx",
+    "follow_up_sessions_sent_idx", "jobs_delivery_analytics_idx", "link_tracking_delivered_idx",
+  ]);
+  const events = await sql`SELECT COUNT(*)::int AS total FROM events`;
+  assert.equal(events[0].total, 1, "Existing history must survive the migration");
+  const jobs = await sql`SELECT status, kind FROM jobs`;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "sent");
   console.log("Migration v0.2 → current passed without losing Meta connection data.");
 } finally {
   await sql.end();

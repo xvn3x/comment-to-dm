@@ -4,6 +4,12 @@ import { loadConfig } from "../src/server/config.js";
 import { createDb } from "../src/server/db.js";
 import { buildApp } from "../src/server/app.js";
 import { startWorker } from "../src/server/worker.js";
+import { requireDisposableDatabase } from "./test-db-guard.mjs";
+
+const testDatabase = requireDisposableDatabase({
+  variable: "INTEGRATION_DATABASE_URL",
+  command: "npm run test:integration",
+});
 
 const config = loadConfig({
   ...process.env,
@@ -11,7 +17,7 @@ const config = loadConfig({
   HOST: "127.0.0.1",
   PORT: "3301",
   PUBLIC_BASE_URL: "http://127.0.0.1:3301",
-  DATABASE_URL: process.env.INTEGRATION_DATABASE_URL || "postgres://commentdm@127.0.0.1:55432/commentdm",
+  DATABASE_URL: testDatabase.url,
   ADMIN_PASSWORD: "integration-password",
   SESSION_SECRET: randomBytes(48).toString("base64url"),
   ENCRYPTION_KEY: randomBytes(32).toString("base64"),
@@ -22,6 +28,9 @@ const config = loadConfig({
 
 const sql = await createDb(config.DATABASE_URL);
 await sql`TRUNCATE jobs, events, rules, oauth_states RESTART IDENTITY CASCADE`;
+// Лизу предыдущего прогона сбрасываем здесь же, внутри одноразовой базы,
+// чтобы для запуска тестов не приходилось трогать общую dev-базу вручную.
+await sql`UPDATE worker_leases SET owner_id = NULL, expires_at = NULL, updated_at = NOW() WHERE singleton = TRUE`;
 await sql`
   UPDATE meta_connection SET app_id = NULL, app_secret_enc = NULL, ig_user_id = NULL,
     username = NULL, token_enc = NULL, token_expires_at = NULL, connected_at = NULL
@@ -124,8 +133,45 @@ try {
   assert.equal(dashboard.body.events[0].status, "sent");
   assert.equal(dashboard.body.stats.sent_24h, 1);
   assert.equal(dashboard.body.stats.deliveries_24h, 2);
-  assert.ok(Array.isArray(dashboard.body.analytics.hourly));
   assert.equal(dashboard.body.rules.find((rule) => rule.id === created.body.id).analytics.triggered_24h, 1);
+
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+  const analytics = await request(
+    `/api/analytics?from=${encodeURIComponent(dayStart.toISOString())}&to=${encodeURIComponent(dayEnd.toISOString())}`,
+    { headers: auth },
+  );
+  assert.equal(analytics.response.status, 200);
+  assert.equal(analytics.body.unit, "hour");
+  assert.equal(analytics.body.buckets.length, 24);
+  assert.equal(analytics.body.totals.deliveries, 2);
+  assert.equal(analytics.body.totals.byKind.public_reply, 1);
+  assert.equal(analytics.body.totals.byKind.private_reply, 1);
+  assert.equal(
+    analytics.body.buckets.reduce((total, bucket) => total + bucket.deliveries, 0),
+    analytics.body.totals.deliveries,
+    "The bars must add up to the headline number",
+  );
+  assert.equal(analytics.body.rules.find((rule) => rule.id === created.body.id).triggered, 1);
+  assert.equal(typeof analytics.body.totals.followGatePassed, "number");
+  assert.equal(typeof analytics.body.totals.followGatePending, "number");
+  assert.equal(typeof analytics.body.totals.followUpSent, "number");
+  assert.equal(typeof analytics.body.totals.followUpClicked, "number");
+  assert.equal(
+    analytics.body.totals.byKind.public_reply
+      + analytics.body.totals.byKind.private_reply
+      + analytics.body.totals.byKind.direct_message
+      + analytics.body.totals.byKind.follow_up,
+    analytics.body.totals.deliveries,
+    "The breakdown must add up to the headline number",
+  );
+  const badRange = await request(
+    `/api/analytics?from=${encodeURIComponent(dayEnd.toISOString())}&to=${encodeURIComponent(dayStart.toISOString())}`,
+    { headers: auth },
+  );
+  assert.equal(badRange.response.status, 400);
+  assert.equal(badRange.body.error, "empty_range");
   const follow = await request("/api/meta/follow-status", {
     method: "POST", headers: auth,
     body: JSON.stringify({ eventId: dashboard.body.events[0].id }),
@@ -360,6 +406,11 @@ try {
   assert.equal(retryJob.payload.quickReply.title, "Проверить");
   const ready = await request("/ready");
   assert.equal(ready.response.status, 200);
+  // Два worker-процесса запущены выше, но отправлять может только держатель лизы.
+  const leaders = await sql`
+    SELECT owner_id FROM worker_leases WHERE singleton = TRUE AND owner_id IS NOT NULL AND expires_at > NOW()
+  `;
+  assert.equal(leaders.length, 1, "Only one worker may hold the leader lease");
   console.log("Integration flow passed: inline postback → durable follower check → final Direct message without duplicates.");
 } finally {
   await Promise.all(stopWorkers.map((stop) => stop()));
