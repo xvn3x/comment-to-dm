@@ -25,6 +25,7 @@ import {
   SecretBox,
   createSession,
   hashPassword,
+  isAllowedMutationOrigin,
   verifyMetaSignature,
   verifyMetaSignedRequest,
   verifyPassword,
@@ -147,8 +148,8 @@ export async function buildApp(sql: Db, config: AppConfig) {
   });
   const box = new SecretBox(config.ENCRYPTION_KEY);
   const meta = new MetaClient(config);
-  const passwordHash = hashPassword(config.ADMIN_PASSWORD, Buffer.from(config.SESSION_SECRET.slice(0, 16)));
-  const cookieName = "commentdm_session";
+  const passwordHash = hashPassword(config.ADMIN_PASSWORD);
+  const cookieName = config.NODE_ENV === "production" ? "__Host-commentdm_session" : "commentdm_session";
 
   await app.register(cookie);
   await app.register(helmet, {
@@ -168,8 +169,12 @@ export async function buildApp(sql: Db, config: AppConfig) {
   });
   await app.register(rateLimit, { global: false });
   await app.register(rawBody, { field: "rawBody", global: false, encoding: false, runFirst: true });
-  app.addHook("onRequest", async (request) => {
-    request.log.info({ method: request.method, path: request.url.split("?", 1)[0] }, "incoming request");
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.url.split("?", 1)[0];
+    if (path.startsWith("/api/")) {
+      reply.header("Cache-Control", "no-store").header("Pragma", "no-cache");
+    }
+    request.log.info({ method: request.method, path: path.startsWith("/r/") ? "/r/:token" : path }, "incoming request");
   });
   app.addHook("onResponse", async (request, reply) => {
     request.log.info({ statusCode: reply.statusCode, responseTime: reply.elapsedTime }, "request completed");
@@ -185,7 +190,9 @@ export async function buildApp(sql: Db, config: AppConfig) {
     if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
       const origin = request.headers.origin;
       const allowed = new Set([config.PUBLIC_BASE_URL, "http://localhost:5173", "http://127.0.0.1:5173"]);
-      if (origin && !allowed.has(origin)) return reply.code(403).send({ error: "invalid_origin" });
+      if (!isAllowedMutationOrigin(origin, allowed, config.NODE_ENV === "production")) {
+        return reply.code(403).send({ error: "invalid_origin" });
+      }
     }
   };
 
@@ -264,7 +271,12 @@ export async function buildApp(sql: Db, config: AppConfig) {
   });
 
   app.post("/api/logout", { preHandler: requireAuth }, async (_request, reply) => {
-    reply.clearCookie(cookieName, { path: "/" });
+    reply.clearCookie(cookieName, {
+      path: "/",
+      secure: config.NODE_ENV === "production",
+      httpOnly: true,
+      sameSite: "strict",
+    });
     return { ok: true };
   });
 
@@ -588,8 +600,8 @@ export async function buildApp(sql: Db, config: AppConfig) {
       `;
       return reply.redirect("/?connected=1");
     } catch (error) {
-      request.log.error(error);
-      return reply.redirect(`/?error=${encodeURIComponent(error instanceof Error ? error.message : "oauth_failed")}`);
+      request.log.error({ err: error }, "Instagram OAuth connection failed");
+      return reply.redirect("/?error=oauth_failed");
     }
   });
 

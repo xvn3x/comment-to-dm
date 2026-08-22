@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 — 2026-08-22
+
+Security hardening перед публичной beta:
+
+- production отказывается запускаться со слабыми или шаблонными admin/session/webhook/database secrets, некорректным encryption key, HTTP URL или mock-режимом;
+- admin cookie использует префикс `__Host-`, изменяющие API-запросы требуют точного same-origin, а API-ответы запрещено кэшировать;
+- Docker-образы и GitHub Actions закреплены immutable SHA/digest, контейнер приложения работает read-only без Linux capabilities и без доступа PostgreSQL к публичной сети;
+- Docker build context исключает `.env`, ключи, дампы, архивы и Git metadata;
+- backup/restore принимает только три ожидаемых обычных файла и не распаковывает произвольные пути или ссылки;
+- пользовательские обновления принимают только явный аннотированный release tag, а не плавающую ветку;
+- tracking tokens и подробности OAuth-ошибок больше не попадают в URL логов или браузера;
+- добавлены автоматические security regression tests и Dependabot для npm, Actions и Docker.
+- новые VPS включают unattended security updates; добавлен проверенный шаблон SSH key-only, который применяется только после успешной проверки входа по ключу.
+
 ## 0.8.0 — 2026-08-22
 
 Первый публичный beta-релиз:

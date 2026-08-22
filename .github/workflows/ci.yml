@@ -13,12 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
-      - run: bash -n scripts/*.sh
+      - run: bash -n scripts/*.sh tests/*.sh
+      - run: bash tests/backup-archive.test.sh
       - run: npm ci
       - run: npm test
       - run: npm run build

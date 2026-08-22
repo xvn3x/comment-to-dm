@@ -24,18 +24,49 @@ export type AppConfig = z.infer<typeof schema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const config = schema.parse(env);
+  const publicUrl = new URL(config.PUBLIC_BASE_URL);
+  if (publicUrl.username || publicUrl.password || publicUrl.search || publicUrl.hash || publicUrl.pathname !== "/") {
+    throw new Error("PUBLIC_BASE_URL must be an origin without credentials, a path, a query or a fragment.");
+  }
+  config.PUBLIC_BASE_URL = publicUrl.origin;
+
   if (config.NODE_ENV === "production") {
+    let databaseUrl: URL;
+    try {
+      databaseUrl = new URL(config.DATABASE_URL);
+    } catch {
+      throw new Error("DATABASE_URL must be a valid PostgreSQL URL.");
+    }
+    if (!["postgres:", "postgresql:"].includes(databaseUrl.protocol)) {
+      throw new Error("DATABASE_URL must use the postgres or postgresql protocol.");
+    }
+    const encryptionKey = Buffer.from(config.ENCRYPTION_KEY, "base64");
     const insecure = [
+      config.ADMIN_PASSWORD.length < 16,
+      config.ADMIN_PASSWORD.includes("replace-with"),
       config.ADMIN_PASSWORD === "local-development-only",
+      config.SESSION_SECRET.length < 43,
       config.SESSION_SECRET.startsWith("local-session-secret"),
+      config.SESSION_SECRET.includes("replace-with"),
       config.ENCRYPTION_KEY.startsWith("AAAA"),
+      encryptionKey.length !== 32,
+      encryptionKey.toString("base64") !== config.ENCRYPTION_KEY,
       config.META_WEBHOOK_VERIFY_TOKEN.startsWith("local-webhook"),
+      config.META_WEBHOOK_VERIFY_TOKEN.length < 24,
+      config.META_WEBHOOK_VERIFY_TOKEN.includes("replace-with"),
+      !databaseUrl.username,
+      databaseUrl.password.length < 16,
+      databaseUrl.password === "commentdm",
+      databaseUrl.password.includes("replace-with"),
     ];
     if (insecure.some(Boolean)) {
       throw new Error("Production secrets are not configured. Review .env.example before starting.");
     }
-    if (!config.PUBLIC_BASE_URL.startsWith("https://")) {
+    if (publicUrl.protocol !== "https:") {
       throw new Error("PUBLIC_BASE_URL must use HTTPS in production.");
+    }
+    if (config.META_MODE !== "live") {
+      throw new Error("META_MODE must be live in production.");
     }
   }
   return config;

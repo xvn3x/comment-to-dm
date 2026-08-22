@@ -19,4 +19,4 @@ Comment to DM is a self-hosted Instagram automation application. Before changing
 
 - Preserve the existing RU/EN interface, light/dark themes, 320px+ layout, durable PostgreSQL queue, idempotency, HMAC checks, encrypted credentials, and 30-day privacy model.
 - Do not alter the production-owner deployment workflow or repository secrets for a self-hosted user.
-- Run `npm test`, `npm run build`, `npm run lint`, and `bash -n scripts/*.sh` after relevant changes.
+- Run `npm test`, `npm run build`, `npm run lint`, `bash -n scripts/*.sh tests/*.sh`, and `bash tests/backup-archive.test.sh` after relevant changes.

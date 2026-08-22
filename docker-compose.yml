@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -13,6 +13,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    networks:
+      - backend
 
   app:
     build: .
@@ -23,9 +25,20 @@ services:
         condition: service_healthy
     expose:
       - "3000"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - frontend
+      - backend
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     restart: unless-stopped
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
@@ -39,8 +52,24 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    networks:
+      - frontend
 
 volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+
+networks:
+  frontend:
+  backend:
+    internal: true

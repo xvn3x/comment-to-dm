@@ -7,9 +7,9 @@ Self-hosted приложение для одного Instagram Professional Acco
 
 Приложение работает на сервере владельца. Оно не отправляет токены, комментарии или статистику разработчику проекта и не просит пароль от Instagram. Для подключения используется собственное Meta-приложение владельца и официальный OAuth.
 
-> Проект находится в beta-версии 0.8.0. Перед подключением важного аккаунта сначала проверьте сценарий на тестовой публикации. Использование официального API снижает риски, но не гарантирует отсутствие ограничений со стороны Meta.
+> Проект находится в beta-версии 0.8.1. Перед подключением важного аккаунта сначала проверьте сценарий на тестовой публикации. Использование официального API снижает риски, но не гарантирует отсутствие ограничений со стороны Meta.
 
-## Возможности v0.8.0
+## Возможности v0.8.1
 
 - одна установка — один Instagram Professional Account;
 - конкретный Post/Reel или все публикации;
@@ -64,7 +64,7 @@ Self-hosted приложение для одного Instagram Professional Acco
 
 ```bash
 apt update && apt install -y git
-git clone https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+git clone --depth 1 --branch v0.8.1 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
 cd /tmp/comment-to-dm
 sudo bash scripts/install-vps.sh ВАШ_IP
 ```
@@ -72,6 +72,12 @@ sudo bash scripts/install-vps.sh ВАШ_IP
 Установщик покажет пароль администратора один раз, запустит PostgreSQL/Caddy и включит ежедневный backup. Сохраните пароль в менеджере паролей.
 
 Полная пошаговая инструкция для человека без опыта разработки: **[docs/INSTALL-RU.md](./docs/INSTALL-RU.md)**.
+
+## Безопасность
+
+Установщик генерирует уникальные случайные ключи отдельно для каждой установки; случайный admin password здесь безопаснее придуманного короткого пароля. Секреты остаются в `.env` на VPS с правами `0600`, а App Secret и Instagram token дополнительно шифруются в PostgreSQL. Репозиторий, контейнеры, сессии, webhook-подписи, бэкапы и процесс обновления покрыты автоматическими security regression tests.
+
+При этом владелец VPS, участник группы Docker или человек с копией backup технически может извлечь секреты. Полная модель угроз, правила хранения и порядок действий при подозрении на утечку описаны в **[SECURITY.md](./SECURITY.md)**.
 
 ## Резервное копирование на VPS
 
@@ -130,7 +136,7 @@ Workflow требует четырёх repository secrets:
 После объявления проверенного релиза владелец своей установки запускает обновление явно, например:
 
 ```bash
-sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.0
+sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.1
 ```
 
 Скрипт создаёт backup, собирает новую версию отдельно и автоматически откатывает Docker-образ, если `/ready` не подтверждает исправную БД и worker.
@@ -148,7 +154,7 @@ NODE_ENV=production
 META_MODE=live
 PUBLIC_BASE_URL=https://your-service.up.railway.app
 ADMIN_PASSWORD=<long-random-password>
-SESSION_SECRET=<at-least-32-random-characters>
+SESSION_SECRET=<at-least-43-random-characters>
 ENCRYPTION_KEY=<32-random-bytes-in-base64>
 META_WEBHOOK_VERIFY_TOKEN=<random-token>
 META_GRAPH_VERSION=v25.0

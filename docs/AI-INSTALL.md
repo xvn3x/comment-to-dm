@@ -24,6 +24,7 @@ The current release supports one Instagram account per installation. This is not
 5. Do not expose port 5432. Only the existing SSH port, TCP 80, and TCP 443 are needed. UDP 443 is optional.
 6. Do not put production secrets into Git, commands that will be recorded in shared logs, screenshots, or issue reports.
 7. Do not automate Meta consent or security checkpoints. Pause and let the human complete them.
+8. Do not disable SSH password login until a second, independent key-authenticated session has succeeded. Never risk locking the human out of the VPS.
 
 ## Conversation style
 
@@ -63,7 +64,7 @@ If the agent has an authorized terminal, perform these commands. Otherwise show 
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+git clone --depth 1 --branch v0.8.1 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
 cd /tmp/comment-to-dm
 sudo bash scripts/install-vps.sh PUBLIC_IP
 ```
@@ -74,13 +75,15 @@ The installer intentionally:
 
 - refuses to overwrite an existing installation;
 - installs Docker from Ubuntu 24.04 packages;
-- creates `/opt/comment-to-dm` and the unprivileged `commentdm` service user;
+- creates `/opt/comment-to-dm` and a dedicated non-login `commentdm` service user; its Docker-group access is root-equivalent and is used only by the backup service;
 - generates independent admin, session, encryption, webhook, database secrets;
 - starts PostgreSQL, the application, worker, and Caddy;
 - waits for `/ready`;
-- enables a daily systemd backup timer.
+- enables a daily systemd backup timer and Ubuntu unattended security updates.
 
 The admin password appears once. Tell the human to save it locally in a password manager. Do not ask them to send it back.
+
+After installation, recommend SSH-key-only access. Make the change only if the human explicitly agrees and a second key-authenticated session has already been verified. The reviewed policy is `deploy/ssh/99-comment-to-dm-hardening.conf`; install it into `/etc/ssh/sshd_config.d/`, run `sshd -t`, reload SSH, then verify a new independent session before closing the provider console.
 
 ## Phase 3 — verify the server
 

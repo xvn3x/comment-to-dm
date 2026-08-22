@@ -1,6 +1,23 @@
+# Never send local credentials or backups to the Docker builder. Git ignore
+# rules do not apply to a Docker build context.
+.env
+.env.*
+!.env.example
+.git
+.github
 node_modules
 dist
-.git
-.env
 coverage
-npm-debug.log
+.runtime
+.wrangler
+outputs
+work
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.sql
+*.tar
+*.tar.gz
+*.tgz

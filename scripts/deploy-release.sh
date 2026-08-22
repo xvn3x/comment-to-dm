@@ -33,6 +33,10 @@ if tar -tzf "$archive_path" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
   echo "Release archive contains an unsafe path." >&2
   exit 3
 fi
+if tar -tvzf "$archive_path" | awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { unsafe=1 } END { exit unsafe ? 0 : 1 }'; then
+  echo "Release archive contains a link, device or another unsupported entry type." >&2
+  exit 3
+fi
 
 tar -xzf "$archive_path" -C "$staging_dir"
 
@@ -75,7 +79,8 @@ fi
 
 tar -xzf "$archive_path" -C "$PROJECT_DIR"
 chmod 755 "$PROJECT_DIR/scripts/backup.sh" "$PROJECT_DIR/scripts/verify-backup.sh" \
-  "$PROJECT_DIR/scripts/restore-backup.sh" "$PROJECT_DIR/scripts/deploy-release.sh" \
+  "$PROJECT_DIR/scripts/restore-backup.sh" "$PROJECT_DIR/scripts/backup-archive.sh" \
+  "$PROJECT_DIR/scripts/deploy-release.sh" \
   "$PROJECT_DIR/scripts/install-vps.sh" "$PROJECT_DIR/scripts/update-vps.sh"
 
 echo "$release_id" > "$PROJECT_DIR/.deployed-release"

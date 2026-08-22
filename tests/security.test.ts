@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { SecretBox, createSession, verifyMetaSignature, verifyMetaSignedRequest, verifySession } from "../src/server/security.js";
+import {
+  SecretBox,
+  createSession,
+  isAllowedMutationOrigin,
+  verifyMetaSignature,
+  verifyMetaSignedRequest,
+  verifySession,
+} from "../src/server/security.js";
 
 test("encrypted secrets round-trip and reject tampering", () => {
   const box = new SecretBox(randomBytes(32).toString("base64"));
@@ -28,4 +35,12 @@ test("Meta webhook and signed callbacks require valid HMAC", () => {
   const payload = Buffer.from(JSON.stringify({ algorithm: "HMAC-SHA256", user_id: "1" })).toString("base64url");
   const signed = `${createHmac("sha256", secret).update(payload).digest("base64url")}.${payload}`;
   assert.equal(verifyMetaSignedRequest(signed, secret)?.user_id, "1");
+});
+
+test("production mutations require an exact same-origin header", () => {
+  const allowed = new Set(["https://comment.example.com"]);
+  assert.equal(isAllowedMutationOrigin("https://comment.example.com", allowed, true), true);
+  assert.equal(isAllowedMutationOrigin("https://evil.example", allowed, true), false);
+  assert.equal(isAllowedMutationOrigin(undefined, allowed, true), false);
+  assert.equal(isAllowedMutationOrigin(undefined, allowed, false), true);
 });

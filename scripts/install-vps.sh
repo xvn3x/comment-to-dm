@@ -73,7 +73,7 @@ echo
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl git docker.io docker-compose-v2
+apt-get install -y ca-certificates curl git docker.io docker-compose-v2 unattended-upgrades
 systemctl enable --now docker
 
 if ! id "$APP_USER" >/dev/null 2>&1; then
@@ -95,7 +95,7 @@ chmod 755 "$PROJECT_DIR/scripts/"*.sh
 env_output="$(docker run --rm \
   -v "$PROJECT_DIR:/app" \
   -w /app \
-  node:22-bookworm-slim \
+  node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 \
   node scripts/generate-env.mjs "$APP_DOMAIN")"
 
 echo "$env_output"
@@ -105,6 +105,8 @@ echo
 
 chown -R "$APP_USER:$APP_USER" "$PROJECT_DIR"
 chmod 600 "$PROJECT_DIR/.env"
+install -m 0644 "$PROJECT_DIR/deploy/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
+systemctl enable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades
 
 cd "$PROJECT_DIR"
 docker compose up -d --build

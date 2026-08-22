@@ -1,6 +1,6 @@
 {
   "name": "comment-to-dm",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Self-hosted Instagram comment-to-DM automation for one professional account",
   "type": "module",

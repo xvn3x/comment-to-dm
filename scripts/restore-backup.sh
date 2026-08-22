@@ -6,6 +6,9 @@ umask 077
 PROJECT_DIR="${COMMENTDM_PROJECT_DIR:-/opt/comment-to-dm}"
 archive_path="${1:-}"
 
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/scripts/backup-archive.sh"
+
 if [[ -z "$archive_path" || ! -f "$archive_path" ]]; then
   echo "Usage: COMMENTDM_RESTORE_CONFIRM=RESTORE_COMMENT_TO_DM $0 /path/to/backup.tar.gz" >&2
   exit 2
@@ -26,7 +29,7 @@ trap cleanup EXIT
 
 "$PROJECT_DIR/scripts/verify-backup.sh" "$archive_path"
 pre_restore_archive="$("$PROJECT_DIR/scripts/backup.sh" pre-restore)"
-tar -xzf "$archive_path" -C "$work_dir"
+extract_commentdm_backup "$archive_path" "$work_dir"
 
 cd "$PROJECT_DIR"
 docker compose stop app

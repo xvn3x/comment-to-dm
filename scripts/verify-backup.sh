@@ -7,6 +7,9 @@ PROJECT_DIR="${COMMENTDM_PROJECT_DIR:-/opt/comment-to-dm}"
 BACKUP_DIR="${COMMENTDM_BACKUP_DIR:-/var/backups/comment-to-dm}"
 archive_path="${1:-}"
 
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/scripts/backup-archive.sh"
+
 if [[ -z "$archive_path" ]]; then
   archive_path="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'comment-to-dm-*.tar.gz' -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
 fi
@@ -44,7 +47,7 @@ if [[ -f "$checksum_path" ]]; then
   )
 fi
 
-tar -xzf "$archive_path" -C "$work_dir"
+extract_commentdm_backup "$archive_path" "$work_dir"
 test -s "$work_dir/database.dump"
 test -s "$work_dir/production.env"
 

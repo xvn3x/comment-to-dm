@@ -18,7 +18,7 @@ let value = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
 value = value
   .replaceAll("comment.example.com", domain)
   .replace("replace-with-a-long-random-password", adminPassword)
-  .replace("replace-with-at-least-32-random-characters", sessionSecret)
+  .replace("replace-with-at-least-43-random-characters", sessionSecret)
   .replace("replace-with-32-random-bytes-in-base64", encryptionKey)
   .replace("replace-with-a-random-webhook-token", webhookToken)
   .replaceAll("replace-with-a-random-database-password", databasePassword);

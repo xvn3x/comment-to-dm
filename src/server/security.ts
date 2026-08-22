@@ -72,6 +72,15 @@ export function verifySession(value: string | undefined, secret: string): boolea
   }
 }
 
+export function isAllowedMutationOrigin(
+  origin: string | undefined,
+  allowedOrigins: ReadonlySet<string>,
+  requireOrigin: boolean,
+): boolean {
+  if (!origin) return !requireOrigin;
+  return allowedOrigins.has(origin);
+}
+
 export function verifyMetaSignature(rawBody: Buffer, signature: string | undefined, appSecret: string): boolean {
   if (!signature?.startsWith("sha256=")) return false;
   const actual = Buffer.from(signature.slice(7), "hex");
