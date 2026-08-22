@@ -252,9 +252,7 @@ npm run test:burst -- http://127.0.0.1:3000 5000 25
 
 ## 12. Deployment
 
-Production размещён на HOSTKEY VPS. Текущий публичный адрес установки:
-
-`https://203-0-113-10.sslip.io/`
+Production размещён на отдельном HOSTKEY VPS. Его адрес, SSH-реквизиты и runtime secrets не должны появляться в публичном репозитории, issue, логах или документации.
 
 Перед push:
 
@@ -263,7 +261,7 @@ Production размещён на HOSTKEY VPS. Текущий публичный 
 - не менять production `.env` и серверные secrets без необходимости;
 - не добавлять `.env` в Git.
 
-Push запускает только CI и не меняет production. Production deploy запускается владельцем вручную через GitHub Actions. Перед обновлением сервер создаёт backup; после обновления нужно проверить `/health`, `/ready`, login, dashboard и затронутый сценарий. Не считать локальную сборку доказательством корректного production deploy.
+Push в `main` запускает CI и отдельный production deploy на сервер сопровождающего проекта. Перед обновлением сервер создаёт backup; после обновления нужно проверить `/health`, `/ready`, login, dashboard и затронутый сценарий. Не считать локальную сборку доказательством корректного production deploy. Pull request и push в чужой fork не получают deploy secrets и не обновляют production.
 
 ## 13. Что пока не делать без нового решения пользователя
 

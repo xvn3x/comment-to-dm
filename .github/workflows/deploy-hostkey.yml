@@ -1,6 +1,8 @@
-name: Deploy HOSTKEY manually
+name: Test and deploy HOSTKEY
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
