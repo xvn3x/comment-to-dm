@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Comment to DM backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=comment-to-dm-backup.service
+
+[Install]
+WantedBy=timers.target

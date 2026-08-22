@@ -1,0 +1,65 @@
+name: Test and deploy HOSTKEY
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: hostkey-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run lint
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Prepare restricted SSH configuration
+        env:
+          DEPLOY_KEY: ${{ secrets.HOSTKEY_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.HOSTKEY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/comment-to-dm-deploy
+          chmod 600 ~/.ssh/comment-to-dm-deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Create release archive
+        run: git archive --format=tar.gz --output="comment-to-dm-${GITHUB_SHA}.tar.gz" HEAD
+      - name: Upload release archive
+        env:
+          DEPLOY_HOST: ${{ secrets.HOSTKEY_HOST }}
+          DEPLOY_USER: ${{ secrets.HOSTKEY_USER }}
+        run: |
+          scp -i ~/.ssh/comment-to-dm-deploy \
+            "comment-to-dm-${GITHUB_SHA}.tar.gz" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/comment-to-dm/incoming/comment-to-dm-${GITHUB_SHA}.tar.gz"
+      - name: Deploy with backup, readiness check and rollback
+        env:
+          DEPLOY_HOST: ${{ secrets.HOSTKEY_HOST }}
+          DEPLOY_USER: ${{ secrets.HOSTKEY_USER }}
+        run: |
+          ssh -i ~/.ssh/comment-to-dm-deploy "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "/opt/comment-to-dm/scripts/deploy-release.sh '${GITHUB_SHA}'"

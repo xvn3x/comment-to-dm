@@ -1,0 +1,20 @@
+[Unit]
+Description=Create a verified Comment to DM backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=commentdm
+Group=commentdm
+SupplementaryGroups=docker
+Environment=HOME=/tmp
+ExecStart=/opt/comment-to-dm/scripts/backup.sh scheduled
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
