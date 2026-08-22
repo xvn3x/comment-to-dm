@@ -100,18 +100,20 @@ sudo COMMENTDM_RESTORE_CONFIRM=RESTORE_COMMENT_TO_DM \
 
 ## Обновление production-сервера
 
-Для собственного production-сервера репозитория предусмотрен workflow `.github/workflows/deploy-hostkey.yml`. Push в `main` сначала проходит unit-тесты, production build и ESLint. Только после этого GitHub передаёт архив коммита на VPS.
+Каждый push в `main` и каждый pull request проверяет отдельный workflow `.github/workflows/ci.yml`: unit-тесты, production build и ESLint. Проверки не меняют работающий сервер.
+
+Обновление собственного production-сервера запускается владельцем вручную через GitHub Actions workflow `.github/workflows/deploy-hostkey.yml`. После повторных тестов GitHub передаёт архив выбранного коммита на VPS. Обычный push никогда не обновляет production автоматически.
 
 Серверный `scripts/deploy-release.sh` перед каждым обновлением создаёт backup, сохраняет предыдущий Docker-образ, собирает новую версию и ждёт успешного `/ready`. Если база или worker не готовы, скрипт автоматически возвращает предыдущий образ. Production `.env` не передаётся через GitHub и остаётся только на VPS.
 
-Workflow требует GitHub Environment `production` и четырёх repository secrets:
+Workflow требует четырёх repository secrets:
 
 - `HOSTKEY_HOST` — IP или DNS-имя VPS;
 - `HOSTKEY_USER` — отдельный deploy-пользователь;
 - `HOSTKEY_SSH_PRIVATE_KEY` — отдельный SSH-ключ только для deploy;
 - `HOSTKEY_KNOWN_HOSTS` — заранее проверенный SSH host key сервера.
 
-Эти secrets относятся только к серверу владельца репозитория. Пользовательские self-hosted установки не получают их и не обновляются автоматически без решения владельца.
+Эти secrets относятся только к серверу владельца репозитория. Пользовательские self-hosted установки не получают их и не обновляются автоматически без решения владельца. Планируемый пользовательский механизм обновлений также должен требовать явного подтверждения, создавать backup и автоматически откатываться при неуспешном `/ready`.
 
 ## Развёртывание на Railway
 

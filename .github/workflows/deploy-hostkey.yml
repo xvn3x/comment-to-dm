@@ -1,8 +1,6 @@
-name: Test and deploy HOSTKEY
+name: Deploy HOSTKEY manually
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -31,7 +29,6 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: production
     steps:
       - uses: actions/checkout@v4
         with:

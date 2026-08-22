@@ -60,8 +60,8 @@ Comment to DM — self-hosted приложение для автоматизац
 - Server: Fastify + TypeScript.
 - Database: PostgreSQL через пакет `postgres`.
 - Worker: встроенный процесс очереди; leader lease не допускает параллельную отправку одного аккаунта несколькими репликами.
-- Production: Docker + Railway + Railway PostgreSQL.
-- VPS-вариант: Docker Compose + Caddy.
+- Production: Docker Compose + Caddy + PostgreSQL на отдельном VPS.
+- Railway остаётся только поддерживаемой альтернативой для самостоятельного развёртывания; текущая production-установка на Railway удалена.
 
 Ключевые файлы:
 
@@ -252,18 +252,18 @@ npm run test:burst -- http://127.0.0.1:3000 5000 25
 
 ## 12. Deployment
 
-Production размещён на Railway, deploy идёт из ветки `main` приватного GitHub-репозитория. Текущий публичный адрес установки:
+Production размещён на HOSTKEY VPS. Текущий публичный адрес установки:
 
-`https://app-production-3734.up.railway.app/`
+`https://203-0-113-10.sslip.io/`
 
 Перед push:
 
 - убедиться, что все проверки зелёные;
 - показать пользователю краткий список изменений;
-- не менять Railway variables без необходимости;
+- не менять production `.env` и серверные secrets без необходимости;
 - не добавлять `.env` в Git.
 
-После push дождаться deploy и проверить `/health`, `/ready`, login, dashboard и затронутый сценарий. Не считать локальную сборку доказательством корректного production deploy.
+Push запускает только CI и не меняет production. Production deploy запускается владельцем вручную через GitHub Actions. Перед обновлением сервер создаёт backup; после обновления нужно проверить `/health`, `/ready`, login, dashboard и затронутый сценарий. Не считать локальную сборку доказательством корректного production deploy.
 
 ## 13. Что пока не делать без нового решения пользователя
 
