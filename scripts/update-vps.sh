@@ -38,4 +38,3 @@ chmod 600 "$archive_path"
 
 sed -i 's/\r$//' "$PROJECT_DIR/scripts/deploy-release.sh"
 bash "$PROJECT_DIR/scripts/deploy-release.sh" "$release_id" "$archive_path"
-

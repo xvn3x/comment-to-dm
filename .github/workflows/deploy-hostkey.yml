@@ -61,4 +61,4 @@ jobs:
           DEPLOY_USER: ${{ secrets.HOSTKEY_USER }}
         run: |
           ssh -i ~/.ssh/comment-to-dm-deploy "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sed -i 's/\\r$//' /opt/comment-to-dm/scripts/deploy-release.sh && bash /opt/comment-to-dm/scripts/deploy-release.sh '${GITHUB_SHA}'"
+            "sed -i 's/\\r$//' /opt/comment-to-dm/scripts/*.sh && bash /opt/comment-to-dm/scripts/deploy-release.sh '${GITHUB_SHA}'"
