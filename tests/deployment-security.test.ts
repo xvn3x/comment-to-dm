@@ -22,6 +22,7 @@ test("production workflow actions are pinned to immutable commit SHAs", () => {
   const officialActions = [...workflows.matchAll(/uses:\s+actions\/(?:checkout|setup-node)@([^\s#]+)/g)];
   assert.ok(officialActions.length >= 4);
   officialActions.forEach((match) => assert.match(match[1], /^[0-9a-f]{40}$/));
+  assert.match(workflows, /incoming\/deploy-release-\$\{GITHUB_SHA\}\.sh/);
 });
 
 test("the application container is read-only and isolated from the public database surface", () => {
@@ -47,6 +48,9 @@ test("self-hosted updates require an explicit release tag", () => {
   assert.match(update, /Укажите проверенный тег релиза/);
   assert.match(update, /не является аннотированным релизным тегом/);
   assert.match(deploy, /Release archive contains a link, device or another unsupported entry type/);
+  assert.match(deploy, /chmod 644 "\$PROJECT_DIR\/Caddyfile"/);
+  assert.match(deploy, /http:\/\/127\.0\.0\.1:2019\/config\//);
+  assert.match(deploy, /Restoring the previous release/);
 });
 
 test("new VPS installations enable security updates and provide an SSH key-only policy", () => {

@@ -40,13 +40,14 @@ fi
 
 tar -xzf "$archive_path" -C "$staging_dir"
 
-for required_file in Dockerfile docker-compose.yml package.json scripts/backup.sh; do
+for required_file in Caddyfile Dockerfile docker-compose.yml package.json scripts/backup.sh; do
   if [[ ! -f "$staging_dir/$required_file" ]]; then
     echo "Release archive is missing $required_file." >&2
     exit 3
   fi
 done
 
+chmod 644 "$staging_dir/Caddyfile"
 install -m 600 "$PROJECT_DIR/.env" "$staging_dir/.env"
 "$PROJECT_DIR/scripts/backup.sh" pre-deploy
 
@@ -77,11 +78,38 @@ if (( ready != 1 )); then
   exit 4
 fi
 
+install -m 600 "$PROJECT_DIR/docker-compose.yml" "$staging_dir/.rollback-docker-compose.yml"
+install -m 600 "$PROJECT_DIR/Caddyfile" "$staging_dir/.rollback-Caddyfile"
 tar -xzf "$archive_path" -C "$PROJECT_DIR"
+chmod 644 "$PROJECT_DIR/Caddyfile"
 chmod 755 "$PROJECT_DIR/scripts/backup.sh" "$PROJECT_DIR/scripts/verify-backup.sh" \
   "$PROJECT_DIR/scripts/restore-backup.sh" "$PROJECT_DIR/scripts/backup-archive.sh" \
   "$PROJECT_DIR/scripts/deploy-release.sh" \
   "$PROJECT_DIR/scripts/install-vps.sh" "$PROJECT_DIR/scripts/update-vps.sh"
+
+docker compose -p comment-to-dm -f "$PROJECT_DIR/docker-compose.yml" up -d --no-build
+
+proxy_ready=0
+for _ in $(seq 1 30); do
+  if docker compose -p comment-to-dm -f "$PROJECT_DIR/docker-compose.yml" exec -T caddy \
+    wget -q -O /dev/null http://127.0.0.1:2019/config/; then
+    proxy_ready=1
+    break
+  fi
+  sleep 1
+done
+
+if (( proxy_ready != 1 )); then
+  echo "Reverse proxy did not become ready. Restoring the previous release." >&2
+  docker compose -p comment-to-dm -f "$PROJECT_DIR/docker-compose.yml" logs --tail=200 caddy >&2 || true
+  install -m 644 "$staging_dir/.rollback-Caddyfile" "$PROJECT_DIR/Caddyfile"
+  install -m 600 "$staging_dir/.rollback-docker-compose.yml" "$PROJECT_DIR/docker-compose.yml"
+  if docker image inspect "comment-to-dm-app:$rollback_tag" > /dev/null 2>&1; then
+    docker image tag "comment-to-dm-app:$rollback_tag" comment-to-dm-app:latest
+  fi
+  docker compose -p comment-to-dm -f "$PROJECT_DIR/docker-compose.yml" up -d --no-build
+  exit 5
+fi
 
 echo "$release_id" > "$PROJECT_DIR/.deployed-release"
 chmod 600 "$PROJECT_DIR/.deployed-release"

@@ -56,12 +56,15 @@ jobs:
           DEPLOY_USER: ${{ secrets.HOSTKEY_USER }}
         run: |
           scp -i ~/.ssh/comment-to-dm-deploy \
-            "comment-to-dm-${GITHUB_SHA}.tar.gz" \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/comment-to-dm/incoming/comment-to-dm-${GITHUB_SHA}.tar.gz"
+            "comment-to-dm-${GITHUB_SHA}.tar.gz" "scripts/deploy-release.sh" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/comment-to-dm/incoming/"
       - name: Deploy with backup, readiness check and rollback
         env:
           DEPLOY_HOST: ${{ secrets.HOSTKEY_HOST }}
           DEPLOY_USER: ${{ secrets.HOSTKEY_USER }}
         run: |
           ssh -i ~/.ssh/comment-to-dm-deploy "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sed -i 's/\\r$//' /opt/comment-to-dm/scripts/*.sh && bash /opt/comment-to-dm/scripts/deploy-release.sh '${GITHUB_SHA}'"
+            "mv /opt/comment-to-dm/incoming/deploy-release.sh /opt/comment-to-dm/incoming/deploy-release-${GITHUB_SHA}.sh && \
+             sed -i 's/\\r$//' /opt/comment-to-dm/incoming/deploy-release-${GITHUB_SHA}.sh && \
+             bash /opt/comment-to-dm/incoming/deploy-release-${GITHUB_SHA}.sh '${GITHUB_SHA}'; \
+             status=\$?; rm -f /opt/comment-to-dm/incoming/deploy-release-${GITHUB_SHA}.sh; exit \$status"
