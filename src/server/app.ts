@@ -355,7 +355,9 @@ export async function buildApp(sql: Db, config: AppConfig) {
         webhook: `${config.PUBLIC_BASE_URL}/webhooks/instagram`,
         deauthorize: `${config.PUBLIC_BASE_URL}/api/meta/deauthorize`,
         dataDeletion: `${config.PUBLIC_BASE_URL}/api/meta/data-deletion`,
+        privacy: `${config.PUBLIC_BASE_URL}/privacy`,
       },
+      metaSetup: { webhookVerifyToken: config.META_WEBHOOK_VERIFY_TOKEN },
       metaMode: config.META_MODE,
     };
   });

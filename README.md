@@ -1,12 +1,15 @@
 # Comment to DM
 
+[![CI](https://github.com/xvn3x/comment-to-dm/actions/workflows/ci.yml/badge.svg)](https://github.com/xvn3x/comment-to-dm/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2f312d.svg)](./LICENSE)
+
 Self-hosted приложение для одного Instagram Professional Account: комментарии, входящие Direct и ответы на Stories запускают настраиваемые сообщения с кнопками, проверкой подписки и follow-up.
 
 Приложение работает на сервере владельца. Оно не отправляет токены, комментарии или статистику разработчику проекта и не просит пароль от Instagram. Для подключения используется собственное Meta-приложение владельца и официальный OAuth.
 
-> Проект находится в ранней версии 0.7.2. Перед подключением важного аккаунта сначала проверьте сценарий в `META_MODE=mock`, затем на тестовой публикации. Использование официального API снижает риски, но не гарантирует отсутствие ограничений со стороны Meta.
+> Проект находится в beta-версии 0.8.0. Перед подключением важного аккаунта сначала проверьте сценарий на тестовой публикации. Использование официального API снижает риски, но не гарантирует отсутствие ограничений со стороны Meta.
 
-## Возможности v0.7.2
+## Возможности v0.8.0
 
 - одна установка — один Instagram Professional Account;
 - конкретный Post/Reel или все публикации;
@@ -47,19 +50,18 @@ Self-hosted приложение для одного Instagram Professional Acco
 
 ## Быстрое развёртывание на VPS
 
-Потребуются Linux VPS, Docker с Compose, публичный IP и домен или постоянный поддомен, направленный на этот IP. Порты 80 и 443 должны быть открыты.
+Потребуется зарубежный VPS с Ubuntu 24.04, публичный IP, 2 ГБ RAM и открытые TCP-порты 80/443. Платный домен не нужен: установщик создаст бесплатный HTTPS-адрес через `sslip.io`.
 
 ```bash
-git clone <repository-url> comment-to-dm
-cd comment-to-dm
-npm install
-npm run generate:env -- comment.example.com
-docker compose up -d --build
+apt update && apt install -y git
+git clone https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+cd /tmp/comment-to-dm
+sudo bash scripts/install-vps.sh ВАШ_IP
 ```
 
-Команда генерации покажет пароль администратора один раз. Сохраните его в менеджере паролей. Caddy автоматически запросит HTTPS-сертификат после того, как DNS начнёт указывать на VPS.
+Установщик покажет пароль администратора один раз, запустит PostgreSQL/Caddy и включит ежедневный backup. Сохраните пароль в менеджере паролей.
 
-Откройте `https://comment.example.com`, войдите с созданным паролем и перейдите к подключению Meta.
+Полная пошаговая инструкция для человека без опыта разработки: **[docs/INSTALL-RU.md](./docs/INSTALL-RU.md)**.
 
 ## Резервное копирование на VPS
 
@@ -113,7 +115,15 @@ Workflow требует четырёх repository secrets:
 - `HOSTKEY_SSH_PRIVATE_KEY` — отдельный SSH-ключ только для deploy;
 - `HOSTKEY_KNOWN_HOSTS` — заранее проверенный SSH host key сервера.
 
-Эти secrets относятся только к серверу владельца репозитория. Пользовательские self-hosted установки не получают их и не обновляются автоматически без решения владельца. Планируемый пользовательский механизм обновлений должен требовать явного подтверждения, создавать backup и автоматически откатываться при неуспешном `/ready`.
+Эти secrets относятся только к серверу владельца репозитория. Пользовательские self-hosted установки не получают их и не обновляются автоматически без решения владельца.
+
+После объявления проверенного релиза владелец своей установки запускает обновление явно, например:
+
+```bash
+sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.0
+```
+
+Скрипт создаёт backup, собирает новую версию отдельно и автоматически откатывает Docker-образ, если `/ready` не подтверждает исправную БД и worker.
 
 ## Развёртывание на Railway
 
@@ -144,9 +154,9 @@ META_GRAPH_VERSION=v25.0
 
 1. Создайте своё приложение в Meta for Developers и добавьте продукт Instagram API with Instagram Login.
 2. Для теста в Development mode добавьте владельца Instagram-аккаунта в роли приложения и примите приглашение.
-3. В админке Comment to DM откройте «Подключение Meta». Там показаны точные OAuth callback и webhook URL для этой установки.
+3. В админке Comment to DM откройте «Подключение». Там показаны точные OAuth callback, webhook URL, скрытый маркер Webhook, URL деавторизации, удаления данных и политики для этой установки.
 4. Добавьте OAuth callback в настройки Business Login for Instagram.
-5. Добавьте webhook URL в Meta Dashboard, укажите значение `META_WEBHOOK_VERIFY_TOKEN` из `.env` и подпишитесь на поля `comments`, `messages` и `messaging_postbacks`.
+5. Добавьте webhook URL в Meta Dashboard, скопируйте маркер Webhook из админки и подпишитесь на поля `comments`, `messages` и `messaging_postbacks`.
 6. Укажите Data Deletion и Deauthorize callback URL, показанные в админке.
 7. В основных настройках Meta укажите публичную политику конфиденциальности: `https://your-service.up.railway.app/privacy`.
 8. Вставьте App ID и App Secret в админке и нажмите «Сохранить и подключить».

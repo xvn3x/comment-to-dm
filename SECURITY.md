@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Do not publish access tokens, App Secrets, server addresses, logs, or proof-of-concept exploits in a public issue. Contact the repository owner privately once a security contact is published.
+Do not publish access tokens, App Secrets, passwords, backups, raw production logs, or proof-of-concept exploits in a public issue. Use GitHub's private vulnerability reporting form in the repository **Security** tab. If that form is unavailable, open an issue containing no exploit or secret and ask the maintainer for a private contact channel.
 
 ## Security model
 

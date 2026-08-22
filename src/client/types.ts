@@ -88,7 +88,8 @@ export type Dashboard = {
     oldest_seconds: number;
     throughput_per_minute: number;
   };
-  urls: { oauthCallback: string; webhook: string; deauthorize: string; dataDeletion: string };
+  urls: { oauthCallback: string; webhook: string; deauthorize: string; dataDeletion: string; privacy: string };
+  metaSetup: { webhookVerifyToken: string };
   metaMode: "mock" | "live";
 };
 
