@@ -75,7 +75,8 @@ fi
 
 tar -xzf "$archive_path" -C "$PROJECT_DIR"
 chmod 755 "$PROJECT_DIR/scripts/backup.sh" "$PROJECT_DIR/scripts/verify-backup.sh" \
-  "$PROJECT_DIR/scripts/restore-backup.sh" "$PROJECT_DIR/scripts/deploy-release.sh"
+  "$PROJECT_DIR/scripts/restore-backup.sh" "$PROJECT_DIR/scripts/deploy-release.sh" \
+  "$PROJECT_DIR/scripts/install-vps.sh" "$PROJECT_DIR/scripts/update-vps.sh"
 
 echo "$release_id" > "$PROJECT_DIR/.deployed-release"
 chmod 600 "$PROJECT_DIR/.deployed-release"

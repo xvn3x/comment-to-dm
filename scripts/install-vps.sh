@@ -98,6 +98,11 @@ env_output="$(docker run --rm \
   node:22-bookworm-slim \
   node scripts/generate-env.mjs "$APP_DOMAIN")"
 
+echo "$env_output"
+echo
+echo "Сохраните пароль администратора сейчас. Установка продолжится автоматически."
+echo
+
 chown -R "$APP_USER:$APP_USER" "$PROJECT_DIR"
 chmod 600 "$PROJECT_DIR/.env"
 
@@ -129,8 +134,6 @@ systemctl start comment-to-dm-backup.service
 
 echo
 echo "Установка завершена."
-echo "$env_output"
-echo
 echo "Адрес: https://$APP_DOMAIN"
 echo "Откройте его в браузере и сохраните показанный выше пароль администратора."
 echo "Если страница пока не открывается, подождите 1–2 минуты: Caddy получает HTTPS-сертификат."
