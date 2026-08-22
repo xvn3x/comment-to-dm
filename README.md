@@ -7,9 +7,9 @@ Self-hosted приложение для одного Instagram Professional Acco
 
 Приложение работает на сервере владельца. Оно не отправляет токены, комментарии или статистику разработчику проекта и не просит пароль от Instagram. Для подключения используется собственное Meta-приложение владельца и официальный OAuth.
 
-> Проект находится в beta-версии 0.8.1. Перед подключением важного аккаунта сначала проверьте сценарий на тестовой публикации. Использование официального API снижает риски, но не гарантирует отсутствие ограничений со стороны Meta.
+> Проект находится в beta-версии 0.8.2. Перед подключением важного аккаунта сначала проверьте сценарий на тестовой публикации. Использование официального API снижает риски, но не гарантирует отсутствие ограничений со стороны Meta.
 
-## Возможности v0.8.1
+## Возможности v0.8.2
 
 - одна установка — один Instagram Professional Account;
 - конкретный Post/Reel или все публикации;
@@ -64,7 +64,7 @@ Self-hosted приложение для одного Instagram Professional Acco
 
 ```bash
 apt update && apt install -y git
-git clone --depth 1 --branch v0.8.1 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+git clone --depth 1 --branch v0.8.2 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
 cd /tmp/comment-to-dm
 sudo bash scripts/install-vps.sh ВАШ_IP
 ```
@@ -136,7 +136,7 @@ Workflow требует четырёх repository secrets:
 После объявления проверенного релиза владелец своей установки запускает обновление явно, например:
 
 ```bash
-sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.1
+sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.2
 ```
 
 Скрипт создаёт backup, собирает новую версию отдельно и автоматически откатывает Docker-образ, если `/ready` не подтверждает исправную БД и worker.

@@ -91,6 +91,7 @@ else
 fi
 
 chmod 755 "$PROJECT_DIR/scripts/"*.sh
+chmod 644 "$PROJECT_DIR/Caddyfile"
 
 env_output="$(docker run --rm \
   -v "$PROJECT_DIR:/app" \

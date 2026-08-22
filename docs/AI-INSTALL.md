@@ -64,7 +64,7 @@ If the agent has an authorized terminal, perform these commands. Otherwise show 
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone --depth 1 --branch v0.8.1 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+git clone --depth 1 --branch v0.8.2 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
 cd /tmp/comment-to-dm
 sudo bash scripts/install-vps.sh PUBLIC_IP
 ```

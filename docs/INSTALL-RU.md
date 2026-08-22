@@ -36,7 +36,7 @@ UDP `443` можно открыть для более быстрого HTTP/3, �
 
 ```bash
 apt update && apt install -y git
-git clone --depth 1 --branch v0.8.1 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+git clone --depth 1 --branch v0.8.2 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
 cd /tmp/comment-to-dm
 sudo bash scripts/install-vps.sh ВАШ_IP
 ```
@@ -191,7 +191,7 @@ sudo /opt/comment-to-dm/scripts/verify-backup.sh
 Установки пользователей не обновляются автоматически от push разработчика. После объявления новой проверенной версии запустите команду с её тегом, например:
 
 ```bash
-sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.1
+sudo /opt/comment-to-dm/scripts/update-vps.sh v0.8.2
 ```
 
 Перед обновлением автоматически создаётся backup. Новая версия собирается отдельно и заменяет работающую только после успешной проверки `/ready`; при ошибке возвращается предыдущий Docker-образ.

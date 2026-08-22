@@ -58,6 +58,7 @@ test("new VPS installations enable security updates and provide an SSH key-only 
   const sshPolicy = projectFile("deploy/ssh/99-comment-to-dm-hardening.conf");
   assert.match(installer, /unattended-upgrades/);
   assert.match(installer, /apt-daily-upgrade\.timer/);
+  assert.match(installer, /chmod 644 "\$PROJECT_DIR\/Caddyfile"/);
   assert.match(sshPolicy, /PasswordAuthentication no/);
   assert.match(sshPolicy, /KbdInteractiveAuthentication no/);
   assert.match(sshPolicy, /PermitRootLogin prohibit-password/);
