@@ -163,4 +163,3 @@ The update creates a backup, builds separately, checks `/ready`, and rolls back 
 - For Meta issues: inspect the Connection readiness state, webhook subscriptions, accepted tester role, professional-account type, and a new event in Activity.
 - Redact tokens, App Secret, passwords, `.env`, backups, and personal message content before sharing logs.
 - Do not “fix” permission errors by making `.env` world-readable or running PostgreSQL on a public port.
-
