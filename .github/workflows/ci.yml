@@ -41,11 +41,11 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE comment_to_dm_integration'
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
-            -c 'CREATE DATABASE comment_to_dm_migration'
+            -c 'CREATE DATABASE comment_to_dm_migration_test'
       - name: Run migration tests on a disposable database
         env:
           ALLOW_DESTRUCTIVE_TEST_DB: "1"
-          INTEGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/comment_to_dm_migration
+          INTEGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/comment_to_dm_migration_test
         run: npm run test:migration
       - name: Run integration tests on a disposable database
         env:
