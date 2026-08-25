@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -12,6 +10,20 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
@@ -22,5 +34,23 @@ jobs:
       - run: bash tests/backup-archive.test.sh
       - run: npm ci
       - run: npm test
+      - name: Create disposable PostgreSQL databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE comment_to_dm_integration'
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE comment_to_dm_migration'
+      - name: Run migration tests on a disposable database
+        env:
+          ALLOW_DESTRUCTIVE_TEST_DB: "1"
+          INTEGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/comment_to_dm_migration
+        run: npm run test:migration
+      - name: Run integration tests on a disposable database
+        env:
+          ALLOW_DESTRUCTIVE_TEST_DB: "1"
+          INTEGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/comment_to_dm_integration
+        run: npm run test:integration
       - run: npm run build
       - run: npm run lint
