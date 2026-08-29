@@ -3,7 +3,7 @@ import {
   Activity, ArrowLeft, Camera, Check, ChevronRight, CircleAlert, CircleHelp, CirclePlay, Clock3, Copy, ExternalLink,
   FileText, Gauge, ImageIcon, Languages, Layers3, Link2, LockKeyhole, LogOut, MessageCircle,
   MessageCircleReply, Mic, Moon, MousePointerClick, Pause, Play, Plug, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck,
-  Sticker, Sun, Trash2, TriangleAlert, X, Zap,
+  Star, Sticker, Sun, Trash2, TriangleAlert, X, Zap,
 } from "lucide-react";
 import { api, ApiError } from "./api";
 import { copy, type Copy as CopyText, type Language } from "./i18n";
@@ -610,7 +610,7 @@ export function App() {
   if (authenticated === null) return <main className="loading-screen"><div className="loader" aria-label={t.loading} /></main>;
 
   if (!authenticated) return <main className="login-page">
-    <div className="login-toolbar"><button className="icon-button" onClick={() => setLanguage(language === "ru" ? "en" : "ru")} aria-label="Language"><Languages size={19} /><span>{language.toUpperCase()}</span></button><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Theme">{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></div>
+    <div className="login-toolbar"><a className="icon-button" href="https://t.me/xvn3x_ai" target="_blank" rel="noreferrer" aria-label={t.telegramChannel} title={t.telegramChannel}><Send size={19} /></a><button className="icon-button" onClick={() => setLanguage(language === "ru" ? "en" : "ru")} aria-label={t.language}><Languages size={19} /><span>{language.toUpperCase()}</span></button><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={t.appearance}>{theme === "light" ? <Moon size={19} /> : <Sun size={19} />}</button></div>
     <section className="login-card"><BrandIcon large /><p className="kicker">COMMENT TO DM · {t.selfHosted.toUpperCase()}</p><h1>{t.loginTitle}</h1><p className="lead">{t.loginText}</p>
       <div className="trust-row"><span><ShieldCheck />{t.selfHosted}</span><span><LockKeyhole />{t.encrypted}</span><span><Camera />{t.officialApi}</span></div>
       <form onSubmit={login} className="login-form"><label>{t.password}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus autoComplete="current-password" /></label>{error && <div className="inline-error"><CircleAlert />{error}</div>}<button className="button primary wide" disabled={busy}>{busy ? `${t.login}…` : t.login}<ChevronRight /></button></form>
@@ -621,6 +621,7 @@ export function App() {
 
   return <div className="app-shell">
     <header className="topbar"><div className="topbar-main"><button className="brand-button" onClick={() => navigate("automations")}><BrandIcon /><strong>Comment to DM</strong></button><div className="topbar-tools">
+      <a className="topbar-icon" href="https://t.me/xvn3x_ai" target="_blank" rel="noreferrer" aria-label={t.telegramChannel} title={t.telegramChannel}><Send /></a>
       <button type="button" className="topbar-icon" onClick={() => setLanguage(language === "ru" ? "en" : "ru")}
         aria-label={`${t.language}: ${language === "ru" ? "Русский" : "English"}`}><Languages /><span>{language.toUpperCase()}</span></button>
       <button type="button" className="topbar-icon" onClick={() => setTheme(theme === "light" ? "dark" : "light")}
@@ -631,7 +632,7 @@ export function App() {
       <nav>{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} aria-current={screen === id ? "page" : undefined} onClick={() => navigate(id)}><Icon />{t[id]}</button>)}</nav></header>
     {error && <div className="global-notice" role="alert"><CircleAlert /><span>{error}</span><button onClick={() => setError("")} aria-label={language === "ru" ? "Закрыть" : "Close"}><X /></button></div>}
     <main className="page-shell">{screen === "automations" && DashboardView()}{screen === "activity" && ActivityView()}{screen === "connection" && ConnectionView()}{screen === "rule" && RuleEditor()}</main>
-    {screen !== "rule" && <footer className="page-footer"><p>{t.dataText}</p><a href="/privacy" target="_blank" rel="noreferrer">{t.privacyPolicy}<ExternalLink /></a></footer>}
+    {screen !== "rule" && <footer className="page-footer"><p>{t.dataText}</p><div className="page-footer-links"><a className="footer-star" href="https://github.com/xvn3x/comment-to-dm" target="_blank" rel="noreferrer"><Star />{t.starGithub}</a><a href="/privacy" target="_blank" rel="noreferrer">{t.privacyPolicy}<ExternalLink /></a></div></footer>}
     <nav className="bottom-nav">{navItems.map(({ id, icon: Icon }) => <button key={id} className={screen === id ? "active" : ""} aria-current={screen === id ? "page" : undefined} onClick={() => navigate(id)}><Icon /><span>{t[id]}</span></button>)}</nav>
   </div>;
 
