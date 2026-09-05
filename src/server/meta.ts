@@ -39,6 +39,26 @@ export type SendContext = {
 
 type RequestMode = "read" | "write";
 
+export type RecoveryPage = {
+  data: Array<Record<string, unknown>>;
+  after?: string;
+  usagePercent?: number;
+};
+
+function recoveryPage(body: Record<string, unknown>): RecoveryPage {
+  if (!Array.isArray(body.data)) throw new MetaApiError("Malformed recovery page.", 502);
+  const paging = body.paging as { next?: unknown; cursors?: { after?: unknown } } | undefined;
+  const after = paging?.next ? paging.cursors?.after : undefined;
+  if (paging?.next && (typeof after !== "string" || !after || after.length > 4096)) {
+    throw new MetaApiError("Missing recovery pagination cursor.", 502);
+  }
+  if (body.data.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+    throw new MetaApiError("Malformed recovery page item.", 502);
+  }
+  return { data: body.data, after: typeof after === "string" ? after : undefined,
+    usagePercent: positiveNumber(body.__usagePercent) };
+}
+
 function positiveNumber(value: unknown): number | undefined {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
@@ -296,6 +316,29 @@ export class MetaClient {
         timestamp: record.timestamp ? String(record.timestamp) : undefined,
       }];
     });
+  }
+
+  async recoveryMedia(context: SendContext, after?: string): Promise<RecoveryPage> {
+    return this.recoveryRead(context, `${context.igUserId}/media`, "id,timestamp", after);
+  }
+
+  async recoveryComments(context: SendContext, mediaId: string, after?: string): Promise<RecoveryPage> {
+    return this.recoveryRead(context, `${mediaId}/comments`, "id,text,timestamp,from", after);
+  }
+
+  async recoveryReplies(context: SendContext, commentId: string): Promise<RecoveryPage> {
+    return this.recoveryRead(context, `${commentId}/replies`, "id");
+  }
+
+  private async recoveryRead(context: SendContext, edge: string, fields: string, after?: string): Promise<RecoveryPage> {
+    if (this.config.META_MODE === "mock") return { data: [] };
+    if (!/^\d+\/(media|comments|replies)$/.test(edge)) throw new Error("Invalid recovery edge.");
+    // Never follow paging.next: it can contain an access token or a different host.
+    const url = new URL(`https://graph.instagram.com/${context.graphVersion}/${edge}`);
+    url.searchParams.set("fields", fields);
+    url.searchParams.set("limit", "50");
+    if (after) url.searchParams.set("after", after);
+    return recoveryPage(await this.request(url, { headers: { Authorization: `Bearer ${context.token}` } }));
   }
 
   async refreshToken(context: SendContext): Promise<{ accessToken: string; expiresIn?: number }> {

@@ -18,6 +18,9 @@ const schema = z.object({
   PROCESSING_TIMEOUT_SECONDS: z.coerce.number().int().min(60).max(3600).default(180),
   SURGE_ENTER_PRIVATE_JOBS: z.coerce.number().int().min(100).max(100_000).default(1000),
   SURGE_EXIT_PRIVATE_JOBS: z.coerce.number().int().min(10).max(50_000).default(250),
+  COMMENT_RECOVERY_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  COMMENT_RECOVERY_INTERVAL_SECONDS: z.coerce.number().int().min(60).max(3600).default(180),
+  COMMENT_RECOVERY_REQUEST_BUDGET: z.coerce.number().int().min(2).max(30).default(8),
 });
 
 export type AppConfig = z.infer<typeof schema>;

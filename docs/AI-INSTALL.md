@@ -64,7 +64,7 @@ If the agent has an authorized terminal, perform these commands. Otherwise show 
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone --depth 1 --branch v0.8.2 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
+git clone --depth 1 --branch v0.8.3 https://github.com/xvn3x/comment-to-dm.git /tmp/comment-to-dm
 cd /tmp/comment-to-dm
 sudo bash scripts/install-vps.sh PUBLIC_IP
 ```
@@ -141,6 +141,10 @@ Facebook Page is not required for the Instagram Login flow used by this project.
 5. If using the follower gate, the second account must voluntarily press the inline postback button before Meta allows the follow check.
 
 Do not reuse an already processed comment to infer failure: idempotency intentionally blocks duplicate execution for the same rule/person/publication.
+
+Release v0.8.3 also checks comments through the official API when a webhook is missed.
+It starts from activation time, not historical comments. Keep webhooks enabled and do not promise instant recovery:
+the reader paginates within a rate-aware budget. See `docs/COMMENT-RECOVERY.md` for scope and limitations.
 
 ## Phase 6 — handoff
 

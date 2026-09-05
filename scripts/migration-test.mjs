@@ -84,6 +84,8 @@ try {
   });
   const migrations = await sql`SELECT version FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9) ORDER BY version`;
   assert.deepEqual(migrations.map((row) => row.version), [3, 4, 5, 6, 7, 8, 9]);
+  assert.equal((await sql`SELECT version FROM schema_migrations WHERE version = 11`).length, 1);
+  assert.equal((await sql`SELECT to_regclass('public.comment_recovery_state') AS name`)[0].name, 'comment_recovery_state');
   const rulesColumns = await sql`
     SELECT column_name FROM information_schema.columns
     WHERE table_name = 'rules' AND column_name IN ('follow_gate_enabled', 'direct_message_enabled')
