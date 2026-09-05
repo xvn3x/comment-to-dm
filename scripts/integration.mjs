@@ -33,7 +33,9 @@ await sql`TRUNCATE jobs, events, rules, oauth_states RESTART IDENTITY CASCADE`;
 await sql`UPDATE worker_leases SET owner_id = NULL, expires_at = NULL, updated_at = NOW() WHERE singleton = TRUE`;
 await sql`
   UPDATE meta_connection SET app_id = NULL, app_secret_enc = NULL, ig_user_id = NULL,
-    username = NULL, token_enc = NULL, token_expires_at = NULL, connected_at = NULL
+    username = NULL, token_enc = NULL, token_expires_at = NULL, connected_at = NULL,
+    outbound_paused = FALSE, health_state = 'healthy', health_reason = NULL,
+    rate_limited_until = NULL, next_health_probe_at = NULL
   WHERE singleton = TRUE
 `;
 

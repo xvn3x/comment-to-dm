@@ -2,6 +2,21 @@ import postgres from "postgres";
 
 export type Db = ReturnType<typeof postgres>;
 
+const commentRecoverySchema = `
+CREATE TABLE IF NOT EXISTS comment_recovery_state (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  ig_user_id TEXT NOT NULL,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  next_scan_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  lease_owner UUID,
+  lease_until TIMESTAMPTZ,
+  cursor JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_scan_at TIMESTAMPTZ,
+  last_error_code TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`;
+
 const baseSchema = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -184,6 +199,7 @@ CREATE INDEX IF NOT EXISTS link_tracking_delivered_idx ON link_tracking (deliver
 CREATE INDEX IF NOT EXISTS link_tracking_clicked_idx ON link_tracking (first_clicked_at DESC);
 CREATE INDEX IF NOT EXISTS follow_up_sessions_sent_idx ON follow_up_sessions (sent_at, clicked_at)
   WHERE sent_at IS NOT NULL;
+${commentRecoverySchema}
 `;
 
 const migrations = [
@@ -370,6 +386,7 @@ const migrations = [
         WHERE sent_at IS NOT NULL;
     `,
   },
+  { version: 11, sql: commentRecoverySchema },
 ];
 
 export async function createDb(databaseUrl: string): Promise<Db> {

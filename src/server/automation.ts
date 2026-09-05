@@ -9,7 +9,10 @@ import {
   type RuleRecord,
 } from "./rules.js";
 
-type EnqueueOptions = { publicBaseUrl?: string };
+type EnqueueOptions = {
+  publicBaseUrl?: string;
+  recovery?: { commentCreatedAt: string; ruleId: string; ruleUpdatedAt: string; igUserId: string; alreadyReplied?: boolean };
+};
 type EnqueueResult = "queued" | "duplicate" | "no_match" | "ignored_self";
 
 function trackedMaterialUrl(baseUrl: string | undefined, token: string): string {
@@ -28,6 +31,13 @@ export async function enqueueComment(
   `;
   const rule = rules.find((candidate) => ruleMatches(candidate, comment));
   if (!rule) return "no_match";
+  const recovery = options.recovery;
+  const commentTime = recovery ? Date.parse(recovery.commentCreatedAt) : undefined;
+  if (recovery && (!Number.isFinite(commentTime) || commentTime! > Date.now()
+    || commentTime! <= Date.now() - 7 * 86_400_000 || rule.id !== recovery.ruleId
+    || rule.updated_at.toISOString() !== recovery.ruleUpdatedAt
+    || commentTime! < rule.updated_at.getTime())) return "no_match";
+  const expiresAt = commentTime === undefined ? undefined : new Date(commentTime + 7 * 86_400_000).toISOString();
 
   const eventId = randomUUID();
   const trackingToken = rule.direct_message_enabled && rule.button_url && rule.button_text
@@ -39,6 +49,25 @@ export async function enqueueComment(
 
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${comment.senderId}:${comment.mediaId}:${rule.id}`}, 0))`;
+    if (recovery) {
+      const connected = await tx`SELECT ig_user_id FROM meta_connection WHERE singleton AND ig_user_id = ${recovery.igUserId}
+        AND token_enc IS NOT NULL AND NOT outbound_paused FOR SHARE`;
+      if (!connected.length) return "no_match" as const;
+      // Pin the checked rule until enqueue commits; edits must not replay history under a new rule.
+      const current = await tx`SELECT id FROM rules WHERE id = ${rule.id}
+        AND active = TRUE
+        AND date_trunc('milliseconds', updated_at) = ${rule.updated_at} FOR SHARE`;
+      if (!current.length) return "no_match" as const;
+      if (recovery.alreadyReplied) {
+        await tx`INSERT INTO events (id, comment_id, media_id, sender_id, username,
+          trigger_type, rule_id, status, error_message, processed_at)
+          VALUES (${eventId}, ${comment.commentId}, ${comment.mediaId}, ${comment.senderId},
+            ${comment.username ?? null}, 'comment', ${rule.id}, 'skipped_duplicate',
+            'Recovery skipped a comment with an existing Instagram reply.', NOW())
+          ON CONFLICT (comment_id) DO NOTHING`;
+        return "duplicate" as const;
+      }
+    }
     const previous = await tx<{ id: string }[]>`
       SELECT id FROM events
       WHERE sender_id = ${comment.senderId}
@@ -70,7 +99,7 @@ export async function enqueueComment(
     if (publicMessage) {
       await tx`
         INSERT INTO jobs (id, event_id, kind, payload)
-        VALUES (${randomUUID()}, ${eventId}, 'public_reply', ${tx.json({ commentId: comment.commentId, message: publicMessage })})
+        VALUES (${randomUUID()}, ${eventId}, 'public_reply', ${tx.json({ commentId: comment.commentId, message: publicMessage, expiresAt })})
       `;
     }
     if (trackingToken && rule.button_url) {
@@ -114,6 +143,7 @@ export async function enqueueComment(
             quickReply: rule.follow_gate_enabled
               ? { title: rule.follow_gate_button_text, payload: `follow_gate:${eventId}` } : undefined,
             followGate: rule.follow_gate_enabled,
+            expiresAt,
           })},
           NOW()
         )

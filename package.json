@@ -1,6 +1,6 @@
 {
   "name": "comment-to-dm",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "description": "Self-hosted Instagram comment-to-DM automation for one professional account",
   "type": "module",
@@ -14,7 +14,7 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:integration": "node --import tsx scripts/integration.mjs",
+    "test:integration": "node --import tsx scripts/integration.mjs && node --import tsx scripts/comment-recovery-integration.mjs",
     "test:migration": "node --import tsx scripts/migration-test.mjs",
     "test:burst": "node scripts/burst-test.mjs",
     "lint": "eslint src tests",
