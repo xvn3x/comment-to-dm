@@ -3,6 +3,8 @@
 [![CI](https://github.com/xvn3x/comment-to-dm/actions/workflows/ci.yml/badge.svg)](https://github.com/xvn3x/comment-to-dm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f312d.svg)](./LICENSE)
 
+Автор и сопровождающий — [xvn3x](https://github.com/xvn3x). [Оригинальный репозиторий](https://github.com/xvn3x/comment-to-dm) · [Telegram-канал автора](https://t.me/el_xvn3x)
+
 Self-hosted приложение для одного Instagram Professional Account: комментарии, входящие Direct и ответы на Stories запускают настраиваемые сообщения с кнопками, проверкой подписки и follow-up.
 
 Приложение работает на сервере владельца. Оно не отправляет токены, комментарии или статистику разработчику проекта и не просит пароль от Instagram. Для подключения используется собственное Meta-приложение владельца и официальный OAuth.
